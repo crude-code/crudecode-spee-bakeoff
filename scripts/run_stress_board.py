@@ -61,7 +61,13 @@ def main() -> None:
     p.add_argument("--max-clean-relative-regression", type=float, default=0.05)
     p.add_argument("--max-worst-scenario-relative-regression", type=float, default=0.25)
     p.add_argument("--out", type=Path, default=Path("results/stress_board_multiseed.json"))
-    p.add_argument(
+    exit_group = p.add_mutually_exclusive_group()
+    exit_group.add_argument(
+        "--report-only",
+        action="store_true",
+        help="write and print the report but exit zero regardless of promotion-gate outcome",
+    )
+    exit_group.add_argument(
         "--strict-nonregression-exit",
         action="store_true",
         help="fail unless clean and worst-scenario gates also pass; intended for candidate promotion",
@@ -116,6 +122,8 @@ def main() -> None:
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
     print(json.dumps(aggregate, indent=2, sort_keys=True))
+    if args.report_only:
+        raise SystemExit(0)
     passed = (
         aggregate["strict_nonregression_gate_pass"]
         if args.strict_nonregression_exit
