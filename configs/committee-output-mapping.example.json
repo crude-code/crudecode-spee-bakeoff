@@ -1,0 +1,8 @@
+{
+  "columns": [
+    {"name": "well_id", "source": "well_id"},
+    {"name": "phase", "source": "phase"},
+    {"name": "forecast_month", "source": "forecast_month"},
+    {"name": "forecast_volume", "source": "forecast_volume"}
+  ]
+}

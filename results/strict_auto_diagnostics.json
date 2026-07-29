@@ -1,0 +1,98 @@
+[
+  {
+    "phases": [
+      {
+        "backtest_score": null,
+        "cohort_weight": 0.0,
+        "flags": [
+          "thin_history"
+        ],
+        "history_months": 6,
+        "model_name": "mhyper_36+legacy_hindcast_ensemble+cgr_pooled",
+        "phase": "oil",
+        "positive_months": 6,
+        "review_score": 35,
+        "uptime": 0.999365,
+        "well_id": "w1"
+      },
+      {
+        "backtest_score": null,
+        "cohort_weight": 0.0,
+        "flags": [
+          "thin_history"
+        ],
+        "history_months": 6,
+        "model_name": "mhyper_36+legacy_hindcast_ensemble",
+        "phase": "gas",
+        "positive_months": 6,
+        "review_score": 35,
+        "uptime": 0.999365,
+        "well_id": "w1"
+      },
+      {
+        "backtest_score": null,
+        "cohort_weight": 0.0,
+        "flags": [
+          "thin_history"
+        ],
+        "history_months": 6,
+        "model_name": "mhyper_36+legacy_hindcast_ensemble+wgr_pooled",
+        "phase": "water",
+        "positive_months": 6,
+        "review_score": 35,
+        "uptime": 0.999365,
+        "well_id": "w1"
+      }
+    ],
+    "primary_phase": "gas",
+    "well_id": "w1"
+  },
+  {
+    "phases": [
+      {
+        "backtest_score": null,
+        "cohort_weight": 0.0,
+        "flags": [
+          "thin_history"
+        ],
+        "history_months": 6,
+        "model_name": "mhyper_36+legacy_hindcast_ensemble+cgr_pooled",
+        "phase": "oil",
+        "positive_months": 6,
+        "review_score": 35,
+        "uptime": 0.999365,
+        "well_id": "w2"
+      },
+      {
+        "backtest_score": null,
+        "cohort_weight": 0.0,
+        "flags": [
+          "thin_history"
+        ],
+        "history_months": 6,
+        "model_name": "mhyper_36+legacy_hindcast_ensemble",
+        "phase": "gas",
+        "positive_months": 6,
+        "review_score": 35,
+        "uptime": 0.999365,
+        "well_id": "w2"
+      },
+      {
+        "backtest_score": null,
+        "cohort_weight": 0.0,
+        "flags": [
+          "thin_history"
+        ],
+        "history_months": 6,
+        "model_name": "mhyper_36+legacy_hindcast_ensemble+wgr_pooled",
+        "phase": "water",
+        "positive_months": 6,
+        "review_score": 35,
+        "uptime": 0.999365,
+        "well_id": "w2"
+      }
+    ],
+    "primary_phase": "gas",
+    "well_id": "w2"
+  }
+]

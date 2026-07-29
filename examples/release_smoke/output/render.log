@@ -1,0 +1,11 @@
+{
+  "input_rows": 864,
+  "output": "examples/release_smoke/output/committee_long.csv",
+  "output_columns": [
+    "well_id",
+    "phase",
+    "forecast_month",
+    "forecast_volume"
+  ],
+  "output_rows": 864
+}

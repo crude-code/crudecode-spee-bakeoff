@@ -1,0 +1,21 @@
+{
+  "canonical_rows": 288,
+  "committee_adapter_rows": 864,
+  "gap_policy": "nan",
+  "inserted_gap_rows": 1,
+  "n_wells": 12,
+  "passed": true,
+  "source_rows": 287,
+  "strict_auto": {
+    "elapsed_seconds": 1.715,
+    "failure_rows": 0,
+    "forecast_rows": 864,
+    "horizon": 24
+  },
+  "vendor_best": {
+    "elapsed_seconds": 1.767,
+    "failure_rows": 0,
+    "forecast_rows": 864,
+    "horizon": 24
+  }
+}

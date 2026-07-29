@@ -1,0 +1,7 @@
+well_id,phase,primary_phase,review_score,model_name,history_months,positive_months,backtest_score,cohort_weight,uptime,flags
+w1,gas,gas,35,mhyper_36+legacy_hindcast_ensemble,6,6,,0.0,0.999365,thin_history
+w1,oil,gas,35,mhyper_36+legacy_hindcast_ensemble+cgr_pooled,6,6,,0.0,0.999365,thin_history
+w1,water,gas,35,mhyper_36+legacy_hindcast_ensemble+wgr_pooled,6,6,,0.0,0.999365,thin_history
+w2,gas,gas,35,mhyper_36+legacy_hindcast_ensemble,6,6,,0.0,0.999365,thin_history
+w2,oil,gas,35,mhyper_36+legacy_hindcast_ensemble+cgr_pooled,6,6,,0.0,0.999365,thin_history
+w2,water,gas,35,mhyper_36+legacy_hindcast_ensemble+wgr_pooled,6,6,,0.0,0.999365,thin_history

@@ -1,0 +1,11 @@
+{
+  "elapsed_seconds": 135.741,
+  "failure_count": 0,
+  "failures": [],
+  "forecast_values": 1080000,
+  "horizon": 360,
+  "n_wells": 1000,
+  "passed": true,
+  "phases": 3,
+  "wells_per_second": 7.367
+}

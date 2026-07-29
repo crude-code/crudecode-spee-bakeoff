@@ -1,0 +1,18 @@
+{
+  "algorithm_version": "smartcast_v1",
+  "command": "run_spee_strict_auto",
+  "diagnostics": "examples/release_smoke/output/strict_diagnostics.json",
+  "elapsed_seconds": 1.715,
+  "failure_rows": 0,
+  "forecast_rows": 864,
+  "forecast_start": null,
+  "horizon": 24,
+  "human_intervention_after_start": false,
+  "input_dir": "examples/release_smoke/output/spee_data",
+  "model_name": "smartcast_v1",
+  "n_wells": 12,
+  "output_csv": "examples/release_smoke/output/strict_auto.csv",
+  "review_queue": "examples/release_smoke/output/strict_review.csv",
+  "schema": "crudecode_spee_submission_v0",
+  "submission_type": "strict_auto"
+}

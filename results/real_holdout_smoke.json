@@ -1,0 +1,78 @@
+{
+  "evaluation": {
+    "arms": {
+      "legacy_arps": {
+        "bias_component": 0.0017645702178160222,
+        "bias_share": 0.2383594309790968,
+        "forecast_zero_policy": "epsilon",
+        "mean_series_absolute_log_error": 0.011890461195299655,
+        "median_log_error": -0.0026468553267240333,
+        "median_series_absolute_log_error": 0.0026468553267240333,
+        "metric_epsilon": null,
+        "n_actual_nan_dropped": 0,
+        "n_log_errors": 36,
+        "n_nonpositive_actual_dropped": 0,
+        "n_nonpositive_forecast_dropped": 0,
+        "n_nonpositive_forecast_replaced": 0,
+        "n_series": 36,
+        "score": 0.007402980492812001,
+        "spread_component": 0.005638410274995979,
+        "spread_share": 0.7616405690209032,
+        "stdev_log_error": 0.01691523082498794
+      },
+      "smartcast_v1": {
+        "bias_component": 0.005345605821768712,
+        "bias_share": 0.4741973672421286,
+        "forecast_zero_policy": "epsilon",
+        "mean_series_absolute_log_error": 0.011611676624368312,
+        "median_log_error": 0.008018408732653068,
+        "median_series_absolute_log_error": 0.008018408784229148,
+        "metric_epsilon": null,
+        "n_actual_nan_dropped": 0,
+        "n_log_errors": 36,
+        "n_nonpositive_actual_dropped": 0,
+        "n_nonpositive_forecast_dropped": 0,
+        "n_nonpositive_forecast_replaced": 0,
+        "n_series": 36,
+        "score": 0.011272955505548405,
+        "spread_component": 0.005927349683779693,
+        "spread_share": 0.5258026327578714,
+        "stdev_log_error": 0.01778204905133908
+      }
+    },
+    "comparison": {
+      "bootstrap_reps": 100,
+      "bootstrap_unit": "well-phase series",
+      "paired_bootstrap_score_delta_ci95": [
+        -0.005629322213995384,
+        0.004591548811973409
+      ],
+      "paired_series_absolute_log_error_delta_mean": -0.0002787845709313444,
+      "paired_series_absolute_log_error_delta_median": 0.006310490555924152,
+      "paired_series_win_rate": 0.4444444444444444,
+      "pooled_relative_delta": 0.5227590450216631,
+      "pooled_score_delta": 0.0038699750127364034
+    },
+    "cutoff_date": "2025-04-01",
+    "evaluation_mode": "retrospective_stabilized_history",
+    "failure_count": 0,
+    "failures": [],
+    "forecast_zero_policy": "epsilon",
+    "horizon": 6,
+    "leakage_control": "SmartCast cohorts were built only from each eligible well's truncated training history.",
+    "limitation": "A revised current download is not a historical reporting snapshot. This test measures retrospective forecasting on stabilized data, not reporting-lag behavior, unless the input is an archived point-in-time snapshot.",
+    "min_history": 12,
+    "n_eligible_wells": 12,
+    "n_input_wells": 12,
+    "n_scored_series": 36,
+    "n_skipped_before_min_history": 0
+  },
+  "generated_at": "2026-07-28T16:05:33.527159+00:00",
+  "source_attestation": {
+    "data_as_of": "",
+    "snapshot_date": "2026-07-28",
+    "source_name": "included synthetic smoke fixture",
+    "source_url": ""
+  },
+  "stabilization_lag_months": 2
+}

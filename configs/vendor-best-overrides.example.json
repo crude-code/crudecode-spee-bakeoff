@@ -1,0 +1,12 @@
+{
+  "approver": "Reservoir Engineer Name",
+  "approved_at": "2026-08-13T10:30:00-05:00",
+  "overrides": [
+    {
+      "well_id": "EXAMPLE-WELL-001",
+      "phase": "oil",
+      "reason": "Confirmed temporary facility outage at cutoff; restored capacity trajectory approved after targeted review.",
+      "values": [1000.0, 950.0, 905.0]
+    }
+  ]
+}

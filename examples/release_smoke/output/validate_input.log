@@ -1,0 +1,12 @@
+{
+  "input": {
+    "input_dir": "examples/release_smoke/output/spee_data",
+    "n_metadata_rows": 12,
+    "n_wells": 12,
+    "phase_available": {
+      "gas": 12,
+      "oil": 12,
+      "water": 12
+    }
+  }
+}

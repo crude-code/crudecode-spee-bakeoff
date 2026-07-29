@@ -1,0 +1,57 @@
+# Release Test Report — SmartCast v1.1.0
+
+Validation date: 2026-07-28
+
+## Static and automated checks
+
+- `python -m compileall -q src tests examples scripts`: passed
+- `python -m pytest -q -rs`: **78 passed, 2 skipped**
+- Skip reason: archive is not a Git checkout, so two tracked-history hygiene tests had no Git index to scan
+- `python scripts/audit_public_history.py --current-only`: passed
+
+## End-to-end competition smoke
+
+- Raw rows: 287
+- Canonical rows: 288
+- Inserted missing-calendar rows under `nan` policy: 1
+- Wells: 12
+- Strict Auto: 864 rows, 0 failures, 24 months
+- Vendor Best: 864 rows, 0 failures, 24 months
+- Committee adapter: 864 rows
+- Strict Auto repeated-output SHA-256: `4c6127117f4a5246eb08fc79354c5fca7e9218a201a09b6ded27316744c024d3`
+- Determinism: byte-identical repeated CSV
+
+## Paired synthetic protocol
+
+- 30 paired seeds
+- 180 wells per seed
+- SmartCast mean score: 0.072198
+- Legacy Arps mean score: 0.071413
+- Mean SmartCast delta: +0.000785 (+1.54%, worse)
+- Seeds won: 11/30
+- Mean-delta bootstrap 95% interval: [-0.001062, 0.002515]
+- Promotion gate: failed; no scoring-derived forecast change promoted
+
+## Allocation-noise classifier experiment
+
+- 50 seeds / 9,000 wells
+- Precision: 98.71%
+- Recall: 97.18%
+- False-positive rate: 0.18%
+- Clean-well flag rate: 0%
+- Status: classifier-only gate passed; forecast behavior unchanged
+
+## Throughput
+
+- 1,000 wells
+- 3 phases
+- 360 forecast months
+- 1,080,000 forecast values
+- 135.741 seconds
+- 0 failures
+
+## Real-holdout runner
+
+- Leakage-controlled runner smoke passed on the included synthetic fixture
+- 12 wells / 36 well-phase series / 0 failures
+- This is execution evidence only, not external real-well performance evidence

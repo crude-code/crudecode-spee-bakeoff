@@ -1,0 +1,8 @@
+{
+ "run_id": "fable5-baseline",
+ "model": "claude-fable-5",
+ "effort": "high",
+ "max_tokens": 64000,
+ "thinking": "adaptive",
+ "skill": "skill/SKILL.md"
+}

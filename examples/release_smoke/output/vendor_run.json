@@ -1,0 +1,18 @@
+{
+  "command": "run_spee_vendor_best",
+  "elapsed_seconds": 1.767,
+  "failure_rows": 0,
+  "fallback_strict_auto": false,
+  "forecast_rows": 864,
+  "forecast_start": null,
+  "horizon": 24,
+  "input_dir": "examples/release_smoke/output/spee_data",
+  "llm_dir": null,
+  "model_name": "smartcast_v1_vendor_best",
+  "n_wells": 12,
+  "output_csv": "examples/release_smoke/output/vendor_best.csv",
+  "override_audit": null,
+  "review_queue": "examples/release_smoke/output/vendor_review.csv",
+  "schema": "crudecode_spee_submission_v0",
+  "submission_type": "vendor_best"
+}
