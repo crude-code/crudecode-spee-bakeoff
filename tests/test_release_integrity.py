@@ -25,3 +25,12 @@ def test_manifest_rejects_unexpected_files(tmp_path: Path) -> None:
     result = verify_manifest(tmp_path)
     assert not result.ok
     assert result.unexpected == ("extra.txt",)
+
+
+def test_runtime_dependencies_include_scipy_for_default_anchor():
+    import tomllib
+
+    root = Path(__file__).resolve().parents[1]
+    payload = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
+    deps = payload["project"]["dependencies"]
+    assert any(str(dep).lower().startswith("scipy") for dep in deps)

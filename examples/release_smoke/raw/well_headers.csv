@@ -1,0 +1,13 @@
+API14,Pad Name,Play,Completed Length FT,Operator Name
+42000000000000,pad-0,basin-0,5000,Synthetic Operator
+42000000000001,pad-0,basin-1,5500,Synthetic Operator
+42000000000002,pad-0,basin-2,6000,Synthetic Operator
+42000000000003,pad-0,basin-0,6500,Synthetic Operator
+42000000000004,pad-1,basin-1,5000,Synthetic Operator
+42000000000005,pad-1,basin-2,5500,Synthetic Operator
+42000000000006,pad-1,basin-0,6000,Synthetic Operator
+42000000000007,pad-1,basin-1,6500,Synthetic Operator
+42000000000008,pad-2,basin-2,5000,Synthetic Operator
+42000000000009,pad-2,basin-0,5500,Synthetic Operator
+42000000000010,pad-2,basin-1,6000,Synthetic Operator
+42000000000011,pad-2,basin-2,6500,Synthetic Operator

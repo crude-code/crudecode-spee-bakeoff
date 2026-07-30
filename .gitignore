@@ -3,17 +3,15 @@
 !.env.example
 
 .venv/
-venv/
 __pycache__/
-*.pyc
+*.py[cod]
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
 
-benchmark_data/
-raw/
-spee_data/
-submissions/
-run_artifacts/
+board/private/
+board/private-*/
+board/results/
 
-*.parquet
-*.sqlite
-*.db
+provenance_by_well.csv
+per_well_private.csv

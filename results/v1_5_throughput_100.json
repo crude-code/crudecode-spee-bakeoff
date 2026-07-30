@@ -1,0 +1,12 @@
+{
+  "elapsed_seconds": 18.373,
+  "failure_count": 0,
+  "failures": [],
+  "forecast_values": 108000,
+  "horizon": 360,
+  "n_wells": 100,
+  "passed": true,
+  "phases": 3,
+  "profile": "selective_cohort_v1",
+  "wells_per_second": 5.443
+}

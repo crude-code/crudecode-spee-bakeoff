@@ -11,7 +11,9 @@ Reported metric families:
   cum_allph  mean of available phase cumulative log errors per well
 
 The exact SPEE per-well aggregation remains unconfirmed, so every result is
-labelled by metric family. Bootstrap resampling is clustered by well.
+labelled by metric family. Bootstrap resampling is clustered by well. Metric
+eligibility is determined only from actuals and applied symmetrically to all
+arms; provider failures still fail closed.
 """
 from __future__ import annotations
 
@@ -91,30 +93,36 @@ def spee(vals: list[float | None]) -> tuple[float, float, float, int]:
     return (2.0 / 3.0) * abs(med) + (1.0 / 3.0) * sd, med, sd, int(x.size)
 
 
-def monthly_avg_le(fc: np.ndarray, act: np.ndarray) -> tuple[float | None, dict[str, int]]:
-    """Use an arm-independent mask based on actuals; penalize forecast zeros.
+def monthly_avg_le(fc: np.ndarray, act: np.ndarray) -> tuple[float | None, dict[str, int | str]]:
+    """Use an actual-only eligibility mask and penalize forecast zeros.
 
-    Actual <= 0 months are excluded because log(F/A) is undefined. Forecast <= 0
-    on an actual-positive month is floored only for metric evaluation, never in
-    the physical forecast. The epsilon is scale-relative and reported.
+    Eligibility is determined only from the answer series and is therefore the
+    same for every arm. A phase with fewer than two positive actual months is
+    reported as metric-ineligible rather than as a model failure. Invalid or
+    wrong-length forecasts remain hard failures.
     """
     fc = np.asarray(fc, dtype=float)
     act = np.asarray(act, dtype=float)
     if fc.size != act.size:
-        return None, {"length_mismatch": 1, "actual_positive": 0, "forecast_floored": 0}
+        return None, {"status": "length_mismatch", "actual_positive": 0,
+                      "forecast_floored": 0, "nonfinite_forecast": 0}
     valid_actual = np.isfinite(act) & (act > 0)
     n = int(valid_actual.sum())
     if n < 2:
-        return None, {"length_mismatch": 0, "actual_positive": n, "forecast_floored": 0}
+        return None, {"status": "insufficient_actual_positive", "actual_positive": n,
+                      "forecast_floored": 0, "nonfinite_forecast": 0}
     f = fc[valid_actual]
     a = act[valid_actual]
-    if np.any(~np.isfinite(f)):
-        return None, {"length_mismatch": 0, "actual_positive": n, "forecast_floored": int(np.sum(~np.isfinite(f)))}
+    nonfinite = int(np.sum(~np.isfinite(f)))
+    if nonfinite:
+        return None, {"status": "nonfinite_forecast", "actual_positive": n,
+                      "forecast_floored": 0, "nonfinite_forecast": nonfinite}
     eps = max(1e-9, 1e-4 * float(np.median(a)))
     floored = int(np.sum(f <= 0))
     f = np.where(f > 0, f, eps)
     return float(np.mean(np.log(f / a))), {
-        "length_mismatch": 0, "actual_positive": n, "forecast_floored": floored
+        "status": "ok", "actual_positive": n, "forecast_floored": floored,
+        "nonfinite_forecast": 0,
     }
 
 
@@ -142,13 +150,21 @@ def parse_arms(value: str) -> list[str]:
 
 
 def main() -> None:
-    here = Path(__file__).resolve().parent
+    repo_root = Path(__file__).resolve().parents[1]
+    local_src = repo_root / "src"
+    if str(local_src) not in sys.path:
+        sys.path.insert(0, str(local_src))
+    from forecast_benchmark.profiles import get_profile, profile_names
     ap = argparse.ArgumentParser()
     ap.add_argument("--board", default="board/private")
     ap.add_argument("--role", choices=("dev", "eval"), default="dev")
     ap.add_argument("--confirm-locked-eval", action="store_true")
     ap.add_argument("--legacy-src", default=os.environ.get("LEGACY_FORECAST_SRC", ""))
-    ap.add_argument("--smartcast-src", default=os.environ.get("SMARTCAST_SRC", str(here / "src")))
+    ap.add_argument("--smartcast-src", default=os.environ.get("SMARTCAST_SRC", str(local_src)))
+    ap.add_argument(
+        "--profile", choices=profile_names(production_only=False), default="scipy_control",
+        help="configuration used for Arm C",
+    )
     ap.add_argument("--arms", type=parse_arms, default=parse_arms("A,B,C"))
     ap.add_argument("--boot", type=int, default=10_000)
     ap.add_argument("--out", default="")
@@ -206,12 +222,13 @@ def main() -> None:
     smart = None
     if "C" in args.arms:
         pool = [to_ws(k, series[k]["train"]) for k in cohort_keys]
-        metadata = {w.well_id: {"basin": wells[w.well_id]["play"]} for w in pool}
-        smart = SC.SmartCastProvider(pool, metadata)
+        metadata = {k: {"basin": wells[k]["play"]} for k in wells}
+        smart = SC.SmartCastProvider(pool, metadata, get_profile(args.profile))
 
     recs: dict[str, dict[str, dict[str, Any]]] = {a: {} for a in args.arms}
     runtime = {a: 0.0 for a in args.arms}
     failure_records: list[dict[str, str]] = []
+    metric_ineligibility: dict[str, dict[str, dict[str, int | str]]] = {}
 
     for key in target_keys:
         if key not in series or "train" not in series[key] or "holdout" not in series[key]:
@@ -225,6 +242,21 @@ def main() -> None:
         major = wells[key].get("major_phase") or (
             "oil" if np.nansum(np.maximum(tr["oil"], 0.0)) >= np.nansum(np.maximum(tr["gas"], 0.0)) / 6.0 else "gas"
         )
+        metric_ineligibility[key] = {}
+        for phase in PHASES:
+            actual = np.asarray(hd[phase], dtype=float)
+            positive = int(np.sum(np.isfinite(actual) & (actual > 0)))
+            total_positive = float(np.nansum(np.maximum(actual, 0.0)))
+            if positive < 2:
+                metric_ineligibility[key][f"monthly_{phase}"] = {
+                    "status": "insufficient_actual_positive",
+                    "actual_positive_months": positive,
+                }
+            if total_positive <= 0:
+                metric_ineligibility[key][f"cumulative_{phase}"] = {
+                    "status": "nonpositive_actual_total",
+                    "actual_positive_months": positive,
+                }
 
         for arm in args.arms:
             t0 = time.perf_counter()
@@ -243,15 +275,21 @@ def main() -> None:
                     if fc is None:
                         raise RuntimeError("provider returned None")
                     fc = np.asarray(fc, dtype=float)
-                    mle, mdiag = monthly_avg_le(fc, np.asarray(hd[phase], dtype=float))
-                    cle = cumulative_le(fc, np.asarray(hd[phase], dtype=float))
+                    actual = np.asarray(hd[phase], dtype=float)
+                    mle, mdiag = monthly_avg_le(fc, actual)
+                    cle = cumulative_le(fc, actual)
                     d[f"m_{phase}"] = mle
                     d[f"c_{phase}"] = cle
                     d[f"metric_diag_{phase}"] = mdiag
+                    status = str(mdiag.get("status"))
+                    if status in {"length_mismatch", "nonfinite_forecast"}:
+                        raise RuntimeError(f"invalid forecast for metric: {status}; diag={mdiag}")
                     if mle is not None:
                         monthly_values.append(mle)
                     if cle is not None:
                         cumulative_values.append(cle)
+                    elif float(np.nansum(np.maximum(actual, 0.0))) > 0:
+                        raise RuntimeError("cumulative metric unavailable despite positive actual total")
                 except Exception as exc:  # preserve exact failure, never silently omit
                     phase_failures += 1
                     failure_records.append({"well_key": key, "arm": arm, "phase": phase, "error": f"{type(exc).__name__}: {exc}"})
@@ -265,14 +303,39 @@ def main() -> None:
             d["phase_failures"] = phase_failures
             recs[arm][key] = d
 
-    # Fail closed on missing major-phase forecasts unless explicitly debugging.
-    major_missing = [
-        (arm, key) for arm in args.arms for key in target_keys
-        if recs[arm].get(key, {}).get("major") is None
+    # Distinguish actual-only metric ineligibility from provider/model failure.
+    major_actual_ineligible = [
+        key for key in target_keys
+        if f"monthly_{recs[args.arms[0]][key]['_major_phase']}" in metric_ineligibility.get(key, {})
     ]
-    if major_missing and not args.allow_major_failures:
-        (outdir / "failures.json").write_text(json.dumps(failure_records, indent=2) + "\n", encoding="utf-8")
-        raise SystemExit(f"Major-phase forecast/metric missing for {len(major_missing)} arm-well pairs; see {outdir/'failures.json'}")
+    major_model_missing = [
+        (arm, key) for arm in args.arms for key in target_keys
+        if key not in major_actual_ineligible and recs[arm].get(key, {}).get("major") is None
+    ]
+    diagnostics_payload = {
+        "model_failures": failure_records,
+        "major_actual_ineligible_wells": [
+            {
+                "well_key": key,
+                "major_phase": recs[args.arms[0]][key]["_major_phase"],
+                "reason": metric_ineligibility[key][f"monthly_{recs[args.arms[0]][key]['_major_phase']}"],
+            }
+            for key in major_actual_ineligible
+        ],
+        "all_actual_metric_ineligibility": metric_ineligibility,
+    }
+    (outdir / "failures.json").write_text(json.dumps(diagnostics_payload, indent=2) + "\n", encoding="utf-8")
+    if major_model_missing and not args.allow_major_failures:
+        raise SystemExit(
+            f"Major-phase MODEL forecast/metric missing for {len(major_model_missing)} arm-well pairs; "
+            f"see {outdir/'failures.json'}"
+        )
+    if major_actual_ineligible:
+        print(
+            f"NOTE: {len(major_actual_ineligible)} well(s) are major-monthly-metric ineligible "
+            "for every arm because the holdout has fewer than two positive actual months; "
+            "they remain available for eligible cumulative/all-phase metrics."
+        )
 
     report: dict[str, Any] = {
         "schema_version": 2,
@@ -282,6 +345,9 @@ def main() -> None:
         "arms": {}, "paired": {}, "segments": {}, "influence": {},
         "runtime_s": runtime,
         "failure_count": len(failure_records),
+        "major_actual_ineligible_count": len(major_actual_ineligible),
+        "major_actual_ineligible_wells": major_actual_ineligible,
+        "smartcast_profile": args.profile if "C" in args.arms else None,
     }
 
     print(f"\n{'metric':<12}{'arm':<5}{'n':>6}{'median LE':>12}{'stdev':>10}{'SPEE':>10}{'catastrophic':>15}")
@@ -305,6 +371,8 @@ def main() -> None:
 
     def clustered(metric: str, base: str, challenge: str, B: int):
         keys = [k for k in target_keys if recs[base][k].get(metric) is not None and recs[challenge][k].get(metric) is not None]
+        if len(keys) < 2:
+            return keys, (float("nan"), float("nan")), float("nan")
         rng = np.random.default_rng(20260729)
         diffs = []
         for _ in range(B):
@@ -314,6 +382,8 @@ def main() -> None:
             if np.isfinite(sb) and np.isfinite(sc):
                 diffs.append(sc - sb)
         arr = np.asarray(diffs, dtype=float)
+        if arr.size == 0:
+            return keys, (float("nan"), float("nan")), float("nan")
         return keys, np.percentile(arr, [2.5, 97.5]), float(np.mean(arr < 0))
 
     print(f"Clustered bootstrap by well (B={args.boot})")
@@ -377,7 +447,7 @@ def main() -> None:
     }
 
     (outdir / "comparison.json").write_text(json.dumps(report, indent=2, default=float) + "\n", encoding="utf-8")
-    (outdir / "failures.json").write_text(json.dumps(failure_records, indent=2) + "\n", encoding="utf-8")
+    (outdir / "failures.json").write_text(json.dumps(diagnostics_payload, indent=2) + "\n", encoding="utf-8")
     if args.role == "eval":
         (outdir / "LOCKED_EVAL_RECEIPT.json").write_text(json.dumps({
             "board_id": board_id,

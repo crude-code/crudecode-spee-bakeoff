@@ -1,0 +1,25 @@
+{
+  "release": "1.4.1",
+  "validation_date": "2026-07-30",
+  "scope": "validation-data provenance hardening; forecasting math unchanged from v1.4.0",
+  "tests": {
+    "passed": 98,
+    "skipped": 2,
+    "failed": 0
+  },
+  "compileall": "passed",
+  "public_boundary_current_tree": "passed",
+  "release_manifest": "passed",
+  "provenance_controls": {
+    "month_method_classification": "passed",
+    "whole_well_gating": "passed",
+    "no_row_deletion": "passed",
+    "reported_holdout_manifest_gate": "passed",
+    "model_input_isolation": "passed"
+  },
+  "forecasting_regression_boundary": {
+    "model_source_changes": false,
+    "existing_control_and_gated_cohort_tests": "passed"
+  },
+  "claim_boundary": "No accuracy claim is made from reporting-method labels alone. Run the private provenance audit and the fixed reported-holdout confirmation."
+}

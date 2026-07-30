@@ -1,0 +1,11 @@
+numpy>=1.26
+scipy>=1.11
+
+[dev]
+pytest>=8.0
+
+[llm]
+anthropic>=0.100
+
+[snapshot]
+psycopg2-binary>=2.9

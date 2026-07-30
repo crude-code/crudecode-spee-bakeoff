@@ -1,57 +1,49 @@
-# Release Test Report — SmartCast v1.1.0
+# Release Test Report — SmartCast v1.3.0
 
-Validation date: 2026-07-28
+Validation date: 2026-07-29
 
 ## Static and automated checks
 
 - `python -m compileall -q src tests examples scripts`: passed
-- `python -m pytest -q -rs`: **78 passed, 2 skipped**
-- Skip reason: archive is not a Git checkout, so two tracked-history hygiene tests had no Git index to scan
-- `python scripts/audit_public_history.py --current-only`: passed
+- `python -m pytest -q`: **88 passed**
+- `git diff --check`: passed
+- CLI smoke tests write only to temporary paths; tracked release evidence remained unchanged
 
-## End-to-end competition smoke
+## Frozen control identity
 
-- Raw rows: 287
-- Canonical rows: 288
-- Inserted missing-calendar rows under `nan` policy: 1
-- Wells: 12
-- Strict Auto: 864 rows, 0 failures, 24 months
-- Vendor Best: 864 rows, 0 failures, 24 months
-- Committee adapter: 864 rows
-- Strict Auto repeated-output SHA-256: `4c6127117f4a5246eb08fc79354c5fca7e9218a201a09b6ded27316744c024d3`
-- Determinism: byte-identical repeated CSV
+- Packaged `arps_bounded_scipy_v1` compared with the historical benchmark implementation
+- 120 randomized histories
+- Included noise, downtime, and missing values
+- Result: **120/120 forecasts matched** at `rtol=1e-10`, `atol=1e-10`
+- `score_real_board.py` synthetic parity smoke: packaged `scipy_control` matched Arm A on all four reported metric families
 
-## Paired synthetic protocol
+## Profile-selection smoke
 
-- 30 paired seeds
-- 180 wells per seed
-- SmartCast mean score: 0.072198
-- Legacy Arps mean score: 0.071413
-- Mean SmartCast delta: +0.000785 (+1.54%, worse)
-- Seeds won: 11/30
-- Mean-delta bootstrap 95% interval: [-0.001062, 0.002515]
-- Promotion gate: failed; no scoring-derived forecast change promoted
+- 36 synthetic development wells
+- 36 disjoint cohort wells
+- Pre-registered tune/confirmation protocol completed
+- One profile won the tune point estimate but failed the confirmation confidence gate
+- Result: **no false promotion; deployment remained the SciPy control**
 
-## Allocation-noise classifier experiment
+## Production-profile throughput smoke
 
-- 50 seeds / 9,000 wells
-- Precision: 98.71%
-- Recall: 97.18%
-- False-positive rate: 0.18%
-- Clean-well flag rate: 0%
-- Status: classifier-only gate passed; forecast behavior unchanged
-
-## Throughput
-
-- 1,000 wells
+- Profile: `scipy_control`
+- 100 wells
 - 3 phases
 - 360 forecast months
-- 1,080,000 forecast values
-- 135.741 seconds
-- 0 failures
+- 108,000 forecast values
+- Elapsed: 18.161 seconds
+- Failures: 0
 
-## Real-holdout runner
+This is a small local throughput smoke, not the final 1,000-well bake-off timing claim.
 
-- Leakage-controlled runner smoke passed on the included synthetic fixture
-- 12 wells / 36 well-phase series / 0 failures
-- This is execution evidence only, not external real-well performance evidence
+## Real-data evidence carried forward
+
+The prior private 299-well development result remains the current accuracy evidence:
+
+- Original SciPy control major-phase SPEE: 0.1209
+- Fast linearized Arps: 0.2098
+- Prior SmartCast stack: 0.1643
+- Prior SmartCast vs control clustered CI: [+0.0016, +0.0584], significantly worse
+
+v1.3 does not claim a new real-data win. It defaults to the exact control and requires a newly extracted confirmation pool before an experimental profile can be promoted.

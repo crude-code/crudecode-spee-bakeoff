@@ -29,6 +29,19 @@ from forecast_benchmark.split import Split
 
 MIN_POSITIVE = 1e-9
 
+# Selection/ablation profiles share the same empirical fits. Caching only the
+# fit-relevant settings avoids recomputing thousands of identical least-squares
+# and SciPy anchor fits while keeping routing decisions fully independent.
+_FIT_CACHE: dict[tuple[object, ...], "FittedCurve | None"] = {}
+_ANCHOR_FORECAST_CACHE: dict[tuple[object, ...], np.ndarray] = {}
+_CACHE_MAX_ITEMS = 50_000
+
+
+class _NoAnchor(Exception):
+    """Raised internally to route the no-anchor ablation through the existing
+    except-branch, so the anchor-off path takes exactly the same code path as an
+    anchor that failed to fit. Keeps one control flow rather than two."""
+
 
 @dataclass(frozen=True)
 class SmartCastConfig:
@@ -45,6 +58,76 @@ class SmartCastConfig:
     cohort_min_wells: int = 5
     max_ratio_monthly_log_slope: float = 0.025
     ratio_independent_blend: float = 0.93
+
+    # ------------------------------------------------------------------ FIXES
+    # anchor_impl — WHICH Arps the safety anchor uses.
+    #   'scipy'      original SciPy bounded-b (arps_scipy_v1). Real-data champion:
+    #                0.1209 major-phase SPEE on the 299-well dev board.
+    #   'linearized' the fast variant in arps.py. Scored 0.2098 with spread
+    #                0.5870 (vs 0.3595) and cum-major spread 0.8496. This is what
+    #                v1.0.0/v1.1.0 silently used, which is the confirmed root cause
+    #                of SmartCast's real-data regression.
+    #   'none'       no anchor blending at all (ablation C2).
+    # Default is 'scipy': anchoring to the weaker implementation was a defect,
+    # and pointing at the champion is a fix, not a tuning choice.
+    anchor_impl: str = "scipy"
+
+    # default_smart_weight — weight given to SmartCast's own forecast on the
+    # DEFAULT branch (no disruption, not thin-history, neither hindcast clearly
+    # better). v1.1.0 hardcoded 0.0, i.e. the default was "return the anchor and
+    # discard every candidate/cohort/ratio layer". Measured on real Delaware
+    # well-phases, this branch can hand the anchor 100% of the forecast.
+    # Left at 0.0 so behaviour is UNCHANGED unless deliberately ablated — this is
+    # a model choice that must be earned on the dev board, not silently flipped.
+    default_smart_weight: float = 0.0
+    depressed_cutoff_smart_weight: float = 0.0
+
+    # Expose every formerly-hardcoded routing weight so the real development
+    # board can isolate each decision without editing production code. Defaults
+    # reproduce v1.2 exactly; conservative profiles live in profiles.py.
+    terminal_streak_smart_weight: float = 0.80
+    anchor_better_smart_weight: float = 0.05
+    candidate_better_smart_weight: float = 0.65
+    thin_history_smart_weight: float = 0.35
+    anchor_better_ratio: float = 0.92
+    candidate_better_ratio: float = 0.85
+
+    # Sparse cohorts must not silently fall back to a mixed-play global shape in
+    # conservative profiles. v1.2 behavior remains the default for reproducible
+    # ablation, while the competition profile disables this fallback.
+    allow_global_cohort_fallback: bool = True
+    cohort_full_support_wells: int = 20
+    require_target_group_metadata: bool = False
+
+    # Cohort risk controls. Defaults preserve v1.3.1 behavior; the v1.4 gated
+    # profile opts into each control explicitly.
+    cohort_max_weight: float = 0.65
+    cohort_blend_space: str = "linear"  # "linear" or "log"
+    cohort_support_horizon: int = 12
+    cohort_min_forecast_age_support: int = 0
+    cohort_max_log_mad: float | None = None
+    cohort_similarity_window: int = 12
+    cohort_max_history_log_error: float | None = None
+    cohort_max_monthly_log_divergence: float | None = None
+    cohort_max_cumulative_log_divergence: float | None = None
+    cohort_endpoint_ratio_low: float | None = None
+    cohort_endpoint_ratio_high: float | None = None
+    cohort_endpoint_log_volatility_max: float | None = None
+
+    # Optional evidence-backed routing restrictions.  These use only fields
+    # available at forecast time: target primary phase and supplied play/basin
+    # metadata.  ``None`` preserves the historical all-target behavior.
+    cohort_allowed_primary_phases: tuple[str, ...] | None = None
+    cohort_allowed_groups: tuple[str, ...] | None = None
+    cohort_allowed_forecast_phases: tuple[str, ...] | None = None
+
+    # Ablation switches for the C0..C6 matrix. All default True == current
+    # behaviour, so enabling them changes nothing until a run turns one off.
+    use_anchor: bool = True
+    use_recovery: bool = True
+    use_cohort: bool = True
+    use_ratio_coupling: bool = True
+    use_terminal_decline: bool = True
 
 
 @dataclass(frozen=True)
@@ -64,10 +147,18 @@ class PhaseDiagnostic:
     history_months: int
     positive_months: int
     backtest_score: float | None
+    anchor_backtest_score: float | None
+    smart_weight: float
+    routing_reason: str
     cohort_weight: float
     uptime: float
     review_score: int
     flags: list[str]
+    cohort_support: int = 0
+    cohort_log_mad: float | None = None
+    cohort_similarity_error: float | None = None
+    cohort_cumulative_divergence: float | None = None
+    cohort_gate_reason: str = ""
 
 
 @dataclass
@@ -85,8 +176,99 @@ class FittedCurve:
     uptime: float
 
 
+@dataclass(frozen=True)
+class CohortProfile:
+    values: np.ndarray
+    support_n: int
+    age_counts: np.ndarray
+    age_log_mad: np.ndarray
+
+
+def _anchor_impl(config: "SmartCastConfig"):
+    """Resolve the safety-anchor implementation from config.
+
+    Single source of truth so the anchor and the anchor's own hindcast score can
+    never disagree about which model they mean — they did in v1.1.0.
+    """
+    if not config.use_anchor or config.anchor_impl == "none":
+        raise _NoAnchor
+    if config.anchor_impl == "scipy":
+        from forecast_benchmark.arps_scipy_v1 import arps_bounded_scipy_v1
+        return arps_bounded_scipy_v1
+    if config.anchor_impl == "linearized":
+        return arps_hyperbolic_bounded_b
+    raise ValueError(f"unknown anchor_impl: {config.anchor_impl!r}")
+
+
 def _terminal_monthly_log_decline(annual_effective: float) -> float:
     return -log(max(1e-12, 1.0 - annual_effective)) / 12.0
+
+
+def _uses_anchor_base_without_candidates(config: "SmartCastConfig") -> bool:
+    """Return True when no candidate/recovery branch can receive weight.
+
+    Cohort-only profiles still need an anchor forecast, but they do not need the
+    expensive candidate board or rolling-origin router.  This keeps accuracy
+    identical while making the proven shrinkage path operationally viable.
+    """
+    return (
+        config.use_anchor
+        and config.anchor_impl != "none"
+        and not config.use_recovery
+        and config.default_smart_weight == 0.0
+        and config.depressed_cutoff_smart_weight == 0.0
+        and config.terminal_streak_smart_weight == 0.0
+        and config.anchor_better_smart_weight == 0.0
+        and config.candidate_better_smart_weight == 0.0
+        and config.thin_history_smart_weight == 0.0
+    )
+
+
+def _is_anchor_only_config(config: "SmartCastConfig") -> bool:
+    """Return True when every experimental layer is disabled."""
+    return (
+        _uses_anchor_base_without_candidates(config)
+        and not config.use_cohort
+        and not config.use_ratio_coupling
+    )
+
+
+def _anchor_only_phase(
+    q: np.ndarray, n_future: int, config: "SmartCastConfig"
+) -> tuple[np.ndarray, "PhaseDiagnostic"]:
+    """Fast path for the verified control profile.
+
+    Avoid fitting the experimental candidate board merely to assign it zero
+    weight. This materially reduces bake-off runtime while preserving exactly
+    the same frozen SciPy anchor and terminal-decline post-processing.
+    """
+    arr = np.asarray(q, dtype=float)
+    forecast = _finalize_forecast(_anchor_forecast(arr, n_future, config), config)
+    valid = np.flatnonzero(np.isfinite(arr) & (arr > 0))
+    flags: list[str] = []
+    if valid.size < config.cohort_thin_months:
+        flags.append("thin_history")
+    if valid.size >= 4:
+        tail = arr[valid[-min(6, valid.size):]]
+        if np.std(np.diff(np.log(np.maximum(tail, MIN_POSITIVE)))) > 0.35:
+            flags.append("volatile_tail")
+    review = min(100, (35 if "thin_history" in flags else 0) + (25 if "volatile_tail" in flags else 0))
+    diagnostic = PhaseDiagnostic(
+        well_id="",
+        phase="",
+        model_name=f"arps_{config.anchor_impl}_v1_anchor",
+        history_months=len(arr),
+        positive_months=int(valid.size),
+        backtest_score=None,
+        anchor_backtest_score=None,
+        smart_weight=0.0,
+        routing_reason="anchor_only_fast_path",
+        cohort_weight=0.0,
+        uptime=1.0,
+        review_score=review,
+        flags=flags,
+    )
+    return forecast, diagnostic
 
 
 def enforce_terminal_decline(values: np.ndarray, annual_effective: float = 0.06) -> np.ndarray:
@@ -99,7 +281,22 @@ def enforce_terminal_decline(values: np.ndarray, annual_effective: float = 0.06)
     y = np.asarray(values, dtype=float).copy()
     if y.size == 0:
         return y
-    y[~np.isfinite(y)] = 0.0
+
+    # BUG FIX (carried by v1.0.0 and v1.1.0): a single non-finite value used to
+    # be set to 0.0, and the np.minimum.accumulate below then propagated that
+    # zero forward forever. enforce_terminal_decline([1000,900,NaN,800,700,600])
+    # returned [1000,900,0,0,0,0] — one bad month silently destroyed the rest of
+    # the forecast. On a 1,000-well submission that is a catastrophic miss on any
+    # well whose fit produced a non-finite value, and it fails quietly.
+    # Interpolate across interior non-finite values instead; edge-extrapolate at
+    # the ends; only fall back to zeros if nothing finite exists at all.
+    finite = np.isfinite(y)
+    if not finite.any():
+        return np.zeros_like(y)
+    if not finite.all():
+        idx = np.arange(y.size)
+        y = np.interp(idx, idx[finite], y[finite])
+
     y = np.maximum(y, 0.0)
     y = np.minimum.accumulate(y)
     if y.size < 2 or y[0] <= 0:
@@ -115,6 +312,33 @@ def enforce_terminal_decline(values: np.ndarray, annual_effective: float = 0.06)
         y[switch + 1 :] = y[switch] * np.exp(-dmin * np.arange(1, tail_n + 1))
     return y
 
+
+
+def _sanitize_forecast(values: np.ndarray) -> np.ndarray:
+    """Return a finite, non-negative forecast without imposing decline shape."""
+    y = np.asarray(values, dtype=float).copy()
+    if y.size == 0:
+        return y
+    finite = np.isfinite(y)
+    if not finite.any():
+        return np.zeros_like(y)
+    if not finite.all():
+        idx = np.arange(y.size)
+        y = np.interp(idx, idx[finite], y[finite])
+    return np.maximum(y, 0.0)
+
+
+def _finalize_forecast(values: np.ndarray, config: "SmartCastConfig") -> np.ndarray:
+    """Apply the production terminal-decline rule only when enabled.
+
+    v1.2 exposed ``use_terminal_decline`` but ignored it at every call site,
+    making the advertised ablation invalid. This helper is the single source of
+    truth for all candidate, anchor, recovery, fallback, and cohort forecasts.
+    """
+    clean = _sanitize_forecast(values)
+    if not config.use_terminal_decline:
+        return clean
+    return enforce_terminal_decline(clean, config.terminal_decline_annual)
 
 def _calendar_positive(q: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     arr = np.asarray(q, dtype=float)
@@ -154,7 +378,7 @@ def _select_window(q: np.ndarray, window: int, skip_recent: int) -> tuple[np.nda
     return visible[start:end].copy(), len(arr) - start
 
 
-def _fit_family_once(
+def _fit_family_once_uncached(
     q: np.ndarray,
     spec: CandidateSpec,
     config: SmartCastConfig,
@@ -245,38 +469,105 @@ def _fit_family_once(
     def forecast(n_future: int) -> np.ndarray:
         t_future = np.arange(origin, origin + n_future, dtype=float)
         raw = np.maximum(model(t_future) * uptime, 0.0)
-        return enforce_terminal_decline(raw, config.terminal_decline_annual)
+        return _finalize_forecast(raw, config)
 
     return FittedCurve(name=name, forecast=forecast, fitted_history=capacity * uptime, uptime=uptime)
 
 
-def _fallback_forecast(q: np.ndarray, n_future: int, annual_decline: float) -> np.ndarray:
+def _fit_settings_key(config: SmartCastConfig) -> tuple[object, ...]:
+    return (
+        config.b_grid, config.sepd_n_grid, config.min_fit_points,
+        config.downtime_fraction, config.uptime_window,
+        config.terminal_decline_annual, config.use_terminal_decline,
+    )
+
+
+def _series_key(q: np.ndarray) -> tuple[int, bytes]:
+    arr = np.ascontiguousarray(np.asarray(q, dtype=np.float64))
+    return int(arr.size), arr.tobytes()
+
+
+def clear_smartcast_caches() -> None:
+    """Clear deterministic in-process fit caches (mainly useful in tests)."""
+    _FIT_CACHE.clear()
+    _ANCHOR_FORECAST_CACHE.clear()
+
+
+def _fit_family_once(
+    q: np.ndarray,
+    spec: CandidateSpec,
+    config: SmartCastConfig,
+    *,
+    strike_downtime: bool = True,
+) -> FittedCurve | None:
+    key = (*_series_key(q), spec, _fit_settings_key(config), bool(strike_downtime))
+    cached = _FIT_CACHE.get(key)
+    if cached is not None or key in _FIT_CACHE:
+        return cached
+    result = _fit_family_once_uncached(q, spec, config, strike_downtime=strike_downtime)
+    if len(_FIT_CACHE) >= _CACHE_MAX_ITEMS:
+        _FIT_CACHE.clear()
+    _FIT_CACHE[key] = result
+    return result
+
+
+def _anchor_forecast(q: np.ndarray, n_future: int, config: SmartCastConfig) -> np.ndarray:
+    key = (*_series_key(q), int(n_future), config.anchor_impl, bool(config.use_anchor))
+    cached = _ANCHOR_FORECAST_CACHE.get(key)
+    if cached is not None:
+        return cached.copy()
+    result = np.asarray(_anchor_impl(config)(np.asarray(q, dtype=float).copy())(n_future), dtype=float)
+    if len(_ANCHOR_FORECAST_CACHE) >= _CACHE_MAX_ITEMS:
+        _ANCHOR_FORECAST_CACHE.clear()
+    _ANCHOR_FORECAST_CACHE[key] = result.copy()
+    return result
+
+
+def _fallback_forecast(q: np.ndarray, n_future: int, config: SmartCastConfig) -> np.ndarray:
     arr = np.asarray(q, dtype=float)
     positive = arr[np.isfinite(arr) & (arr > 0)]
     if positive.size == 0:
         return np.zeros(n_future)
     level = float(np.median(positive[-min(3, len(positive)) :]))
-    d = _terminal_monthly_log_decline(annual_decline)
+    if not config.use_terminal_decline:
+        return np.full(n_future, level, dtype=float)
+    d = _terminal_monthly_log_decline(config.terminal_decline_annual)
     return level * np.exp(-d * np.arange(1, n_future + 1))
 
 
 def _score(actual: np.ndarray, forecast: np.ndarray) -> float:
+    """Robust visible-history routing loss with fail-closed zero treatment.
+
+    Earlier versions excluded forecast zeros from the log component whenever the
+    actual was positive. That made a candidate's worst months partially vanish
+    from the evidence used to route away from the anchor. The real-board scorer
+    uses an actual-driven mask and a metric-only positive floor, so the inner
+    router now follows the same principle.
+    """
     a = np.asarray(actual, dtype=float)
     f = np.asarray(forecast, dtype=float)
-    valid = np.isfinite(a) & np.isfinite(f)
-    if not np.any(valid):
+    if a.size != f.size or np.any(~np.isfinite(f)):
         return 9.0
-    a, f = a[valid], np.maximum(f[valid], 0.0)
-    positive = (a > 0) & (f > 0)
-    if positive.sum() >= 2:
-        le = np.log(f[positive] / a[positive])
-        log_component = (2.0 / 3.0) * abs(float(np.median(le))) + (1.0 / 3.0) * float(np.std(le))
-    else:
-        log_component = 1.0
-    scale = float(np.median(np.abs(a[a > 0]))) if np.any(a > 0) else 1.0
-    relative_component = float(np.mean(np.abs(f - a)) / max(scale, 1.0))
-    zero_component = float(np.mean(((a <= 0) & (f > 0.05 * max(scale, 1.0))).astype(float)))
-    return 0.65 * log_component + 0.25 * relative_component + 0.10 * zero_component
+
+    positive_actual = np.isfinite(a) & (a > 0)
+    if int(positive_actual.sum()) < 2:
+        return 9.0
+    a_pos = a[positive_actual]
+    scale = max(float(np.median(a_pos)), 1.0)
+    eps = max(1e-9, 1e-4 * scale)
+    f_pos = np.where(f[positive_actual] > 0, f[positive_actual], eps)
+    le = np.log(f_pos / a_pos)
+    log_component = (2.0 / 3.0) * abs(float(np.median(le))) + (1.0 / 3.0) * float(np.std(le))
+
+    finite_actual = np.isfinite(a)
+    relative_component = float(
+        np.mean(np.abs(np.maximum(f[finite_actual], 0.0) - np.maximum(a[finite_actual], 0.0)))
+        / scale
+    )
+    zero_component = float(
+        np.mean(((a[finite_actual] <= 0) & (f[finite_actual] > 0.05 * scale)).astype(float))
+    )
+    return 0.70 * log_component + 0.20 * relative_component + 0.10 * zero_component
 
 
 def _candidate_specs(config: SmartCastConfig) -> list[CandidateSpec]:
@@ -305,7 +596,7 @@ def _rolling_backtest_score(q: np.ndarray, spec: CandidateSpec, config: SmartCas
             cursor -= h
         for rank, cutoff in enumerate(origins):
             actual = arr[cutoff : cutoff + h]
-            if np.sum(np.isfinite(actual)) < max(2, h // 2):
+            if np.sum(np.isfinite(actual) & (actual > 0)) < max(2, h // 2):
                 continue
             fitted = _fit_family_once(arr[:cutoff].copy(), spec, config)
             if fitted is None:
@@ -333,11 +624,19 @@ def _legacy_backtest_score(q: np.ndarray, config: SmartCastConfig) -> float | No
             cursor -= h
         for rank, cutoff in enumerate(origins):
             actual = arr[cutoff:cutoff + h]
-            if np.sum(np.isfinite(actual)) < max(2, h // 2):
+            if np.sum(np.isfinite(actual) & (actual > 0)) < max(2, h // 2):
                 continue
             try:
-                pred = arps_hyperbolic_bounded_b(arr[:cutoff].copy())(h)
-            except (RuntimeError, ValueError, FloatingPointError):
+                # SECOND INSTANCE OF THE ANCHOR BUG: this hindcast decided the
+                # `legacy_bt < 0.92*bt` branch, but it was scoring the LINEARIZED
+                # Arps while the branch's purpose is to ask whether the ANCHOR
+                # beats the candidate board. Scoring one model and then deferring
+                # to a different one made the branch decision on the wrong
+                # evidence. Use the same implementation the anchor uses.
+                pred = _finalize_forecast(
+                    _anchor_forecast(arr[:cutoff], h, config), config
+                )
+            except (_NoAnchor, RuntimeError, ValueError, FloatingPointError):
                 continue
             weight = 1.0 / (1.0 + rank)
             scores.append((_score(actual, pred), weight))
@@ -410,7 +709,7 @@ def smartcast_phase(q: np.ndarray, n_future: int, config: SmartCastConfig | None
     winner = scored[0][1] if scored else CandidateSpec("mhyper_36", "hyperbolic", 36)
     fitted = _fit_family_once(arr, winner, config)
     if fitted is None:
-        forecast = _fallback_forecast(arr, n_future, config.terminal_decline_annual)
+        forecast = _fallback_forecast(arr, n_future, config)
         winner_name = "terminal_fallback"
         uptime = 1.0
     else:
@@ -437,7 +736,7 @@ def smartcast_phase(q: np.ndarray, n_future: int, config: SmartCastConfig | None
     # Current-status versus temporary-recovery hypotheses.  The blend is
     # explicit and deterministic; it avoids treating every cutoff zero as
     # either permanent shut-in or guaranteed recovery.
-    if low or streak:
+    if (low or streak) and config.use_recovery:
         recovery_spec = CandidateSpec("recovery_skip3", "hyperbolic", 36, skip_recent=min(3, max(1, streak)))
         recovery = _fit_family_once(arr, recovery_spec, config)
         if recovery is not None:
@@ -457,7 +756,7 @@ def smartcast_phase(q: np.ndarray, n_future: int, config: SmartCastConfig | None
             status_level = 0.0 if streak >= 2 else float(np.nanmedian(arr[-min(3, len(arr)) :]))
             status_fc = np.full(n_future, max(status_level, 0.0))
             forecast = recovery_weight * recovery_fc + (1.0 - recovery_weight) * status_fc
-            forecast = enforce_terminal_decline(forecast, config.terminal_decline_annual)
+            forecast = _finalize_forecast(forecast, config)
             winner_name += "+recovery_status_blend"
             flags.append("recovery_status_hypotheses")
 
@@ -468,32 +767,44 @@ def smartcast_phase(q: np.ndarray, n_future: int, config: SmartCastConfig | None
     # the richer model board from throwing away a strong bounded-Arps answer
     # on wells where the simpler model is demonstrably more stable.
     try:
-        legacy_fc = arps_hyperbolic_bounded_b(arr)(n_future)
+        # ablation C2 (use_anchor=False / anchor_impl='none') raises _NoAnchor
+        # here and falls through to the same except-branch as a failed fit.
+        legacy_fc = _anchor_forecast(arr, n_future, config)
+        routing_reason = "default_anchor"
         if streak >= 2:
-            smart_weight = 0.80
+            smart_weight = config.terminal_streak_smart_weight
+            routing_reason = "terminal_streak"
         elif low:
             # A single depressed but non-zero cutoff report is usually a
             # partial-month/allocation/operational artifact.  Preserve the
             # bounded-Arps capacity path rather than allowing a transient dip
             # to depress the entire forecast.  This safety rule takes priority
             # over noisy short internal hindcasts.
-            smart_weight = 0.0
-        elif legacy_bt is not None and bt is not None and legacy_bt < 0.92 * bt:
-            smart_weight = 0.05
-        elif legacy_bt is not None and bt is not None and bt < 0.85 * legacy_bt:
-            smart_weight = 0.65
+            smart_weight = config.depressed_cutoff_smart_weight
+            routing_reason = "depressed_cutoff"
+        elif (legacy_bt is not None and bt is not None
+              and legacy_bt < config.anchor_better_ratio * bt):
+            smart_weight = config.anchor_better_smart_weight
+            routing_reason = "anchor_hindcast_better"
+        elif (legacy_bt is not None and bt is not None
+              and bt < config.candidate_better_ratio * legacy_bt):
+            smart_weight = config.candidate_better_smart_weight
+            routing_reason = "candidate_hindcast_better"
         elif positive_n < config.cohort_thin_months:
-            smart_weight = 0.35
+            smart_weight = config.thin_history_smart_weight
+            routing_reason = "thin_history"
         else:
             # Use the richer family only when visible-history hindcasts earn
             # the right to deviate.  Otherwise the bounded-Arps anchor remains
             # the deterministic default.
-            smart_weight = 0.0
+            smart_weight = config.default_smart_weight
+            routing_reason = "default_anchor"
         forecast = smart_weight * forecast + (1.0 - smart_weight) * legacy_fc
-        forecast = enforce_terminal_decline(forecast, config.terminal_decline_annual)
+        forecast = _finalize_forecast(forecast, config)
         winner_name += "+legacy_hindcast_ensemble"
-    except (RuntimeError, ValueError, FloatingPointError):
-        pass
+    except (_NoAnchor, RuntimeError, ValueError, FloatingPointError):
+        smart_weight = 1.0
+        routing_reason = "no_anchor"
 
     review = 0
     review += 35 if "thin_history" in flags else 0
@@ -509,6 +820,9 @@ def smartcast_phase(q: np.ndarray, n_future: int, config: SmartCastConfig | None
         history_months=len(arr),
         positive_months=positive_n,
         backtest_score=round(float(bt), 6) if bt is not None else None,
+        anchor_backtest_score=round(float(legacy_bt), 6) if legacy_bt is not None else None,
+        smart_weight=round(float(smart_weight), 6),
+        routing_reason=routing_reason,
         cohort_weight=0.0,
         uptime=round(float(uptime), 6),
         review_score=min(100, review),
@@ -518,18 +832,43 @@ def smartcast_phase(q: np.ndarray, n_future: int, config: SmartCastConfig | None
 
 
 class CohortLibrary:
-    """Point-in-time cohort shapes and ratio-slope priors built from inputs."""
+    """Point-in-time cohort shapes and ratio-slope priors built from inputs.
+
+    v1.4 retains the robust median type-well shape that produced the only
+    replicated challenger signal, but also records age-specific support and
+    robust log dispersion.  A large overall cohort is not evidence that enough
+    peers support the specific ages being forecast.
+    """
 
     def __init__(self, wells: list[WellSeries], metadata: dict[str, dict[str, str]], config: SmartCastConfig):
         self.config = config
-        self.profiles: dict[tuple[str, str], tuple[np.ndarray, int]] = {}
+        self.profiles: dict[tuple[str, str], CohortProfile] = {}
         self.ratio_slopes: dict[tuple[str, str], tuple[float, int]] = {}
         self._build(wells, metadata)
 
     @staticmethod
     def _group(well_id: str, metadata: dict[str, dict[str, str]]) -> str:
-        basin = metadata.get(well_id, {}).get("basin", "").strip().lower()
-        return basin or "__global__"
+        raw = metadata.get(well_id, {}).get("basin", "").strip().lower()
+        if not raw:
+            return "__global__"
+        label = raw.replace("-", "_").replace(" ", "_").replace("/", "_")
+        while "__" in label:
+            label = label.replace("__", "_")
+        aliases = {
+            "eagleford": "eagle_ford",
+            "lower_eagle_ford": "eagle_ford",
+            "upper_eagle_ford": "eagle_ford",
+            "dj_basin": "dj",
+            "denver_julesburg": "dj",
+            "denver_julesburg_basin": "dj",
+            "niobrara_a": "dj",
+            "niobrara_b": "dj",
+            "niobrara_c": "dj",
+            "codell": "dj",
+            "delaware_basin": "delaware",
+            "permian_delaware": "delaware",
+        }
+        return aliases.get(label, label)
 
     def _build(self, wells: list[WellSeries], metadata: dict[str, dict[str, str]]) -> None:
         profile_values: dict[tuple[str, str, int], list[float]] = {}
@@ -563,65 +902,185 @@ class CohortLibrary:
                 if slope is not None:
                     for g in (group, "__global__"):
                         ratio_values.setdefault((g, rel), []).append(slope)
+
         for (group, phase), ids in group_wells.items():
             ages = sorted(age for (g, p, age) in profile_values if g == group and p == phase)
             if not ages:
                 continue
             max_age = max(ages)
             profile = np.full(max_age + 1, np.nan)
+            age_counts = np.zeros(max_age + 1, dtype=int)
+            age_log_mad = np.full(max_age + 1, np.nan)
             for age in ages:
-                values = profile_values[(group, phase, age)]
-                if len(values) >= max(2, self.config.cohort_min_wells // 2):
-                    profile[age] = float(np.median(values))
-            # fill internal holes, then force non-increasing decline shape
+                values = np.asarray(profile_values[(group, phase, age)], dtype=float)
+                values = values[np.isfinite(values) & (values > 0)]
+                age_counts[age] = int(values.size)
+                if values.size >= max(2, self.config.cohort_min_wells // 2):
+                    # Median in log space is the same robust center as a median
+                    # ratio, while making the multiplicative dispersion explicit.
+                    lv = np.log(values)
+                    center = float(np.median(lv))
+                    profile[age] = float(np.exp(center))
+                    age_log_mad[age] = float(1.4826 * np.median(np.abs(lv - center)))
             valid = np.flatnonzero(np.isfinite(profile))
             if valid.size >= 3:
+                # Preserve v1.3.1 interpolation/shape behavior for the existing
+                # cohort profile; only the new gate uses support/dispersion.
                 profile = np.interp(np.arange(len(profile)), valid, profile[valid])
                 profile = np.minimum.accumulate(np.maximum(profile, 0.0))
-                self.profiles[(group, phase)] = (profile, len(ids))
+                self.profiles[(group, phase)] = CohortProfile(
+                    values=profile,
+                    support_n=len(ids),
+                    age_counts=age_counts,
+                    age_log_mad=age_log_mad,
+                )
         for key, values in ratio_values.items():
             self.ratio_slopes[key] = (float(np.median(values)), len(values))
 
-    def forecast(self, well: WellSeries, phase: str, n_future: int, metadata: dict[str, dict[str, str]]) -> tuple[np.ndarray | None, float]:
+    def forecast(
+        self,
+        well: WellSeries,
+        phase: str,
+        n_future: int,
+        metadata: dict[str, dict[str, str]],
+    ) -> tuple[np.ndarray | None, float, dict[str, object]]:
+        evidence: dict[str, object] = {
+            "group": "",
+            "support_n": 0,
+            "min_age_support": 0,
+            "log_mad": None,
+            "similarity_error": None,
+            "gate_reason": "",
+        }
         q = np.asarray(getattr(well, phase), dtype=float)
         valid = np.flatnonzero(np.isfinite(q) & (q > 0))
         if valid.size < 2:
-            return None, 0.0
+            evidence["gate_reason"] = "insufficient_target_history"
+            return None, 0.0, evidence
         peak = int(valid[np.argmax(q[valid])])
+        peak_q = float(q[peak])
         age = len(q) - 1 - peak
         group = self._group(well.well_id, metadata)
+        evidence["group"] = group
         entry = self.profiles.get((group, phase))
-        if entry is None or entry[1] < self.config.cohort_min_wells:
+        if (entry is None or entry.support_n < self.config.cohort_min_wells) and self.config.allow_global_cohort_fallback:
             entry = self.profiles.get(("__global__", phase))
-        if entry is None or entry[1] < self.config.cohort_min_wells:
-            return None, 0.0
-        profile, _ = entry
+            if entry is not None:
+                evidence["group"] = "__global__"
+        if entry is None or entry.support_n < self.config.cohort_min_wells:
+            evidence["gate_reason"] = "insufficient_cohort_support"
+            return None, 0.0, evidence
+
+        profile = entry.values
+        support_n = entry.support_n
+        evidence["support_n"] = int(support_n)
         ages = age + np.arange(1, n_future + 1)
         raw = np.empty(n_future, dtype=float)
         in_range = ages < len(profile)
         raw[in_range] = profile[ages[in_range]]
         if np.any(~in_range):
             anchor = float(profile[-1])
-            d = _terminal_monthly_log_decline(self.config.terminal_decline_annual)
-            raw[~in_range] = anchor * np.exp(-d * (ages[~in_range] - (len(profile) - 1)))
+            if self.config.use_terminal_decline:
+                d = _terminal_monthly_log_decline(self.config.terminal_decline_annual)
+                raw[~in_range] = anchor * np.exp(-d * (ages[~in_range] - (len(profile) - 1)))
+            else:
+                raw[~in_range] = anchor
+
         recent_idx = valid[-min(3, len(valid)) :]
-        expected = np.interp(recent_idx - peak, np.arange(len(profile)), profile, left=profile[0], right=profile[-1])
+        expected = np.interp(
+            recent_idx - peak,
+            np.arange(len(profile)),
+            profile,
+            left=profile[0],
+            right=profile[-1],
+        )
         scale = float(np.median(q[recent_idx] / np.maximum(expected, MIN_POSITIVE)))
-        fc = enforce_terminal_decline(np.maximum(raw * scale, 0.0), self.config.terminal_decline_annual)
-        # Shrink only genuinely short visible histories.  Using months since
-        # the observed peak is unstable under allocation noise because one
-        # late spike can make a mature well look artificially "thin".
+        fc = _finalize_forecast(np.maximum(raw * scale, 0.0), self.config)
+
         visible_positive = int(valid.size)
-        weight = float(np.clip((self.config.cohort_thin_months - visible_positive) / self.config.cohort_thin_months, 0.0, 0.65))
-        return fc, weight
+        base_weight = float(np.clip(
+            (self.config.cohort_thin_months - visible_positive) / self.config.cohort_thin_months,
+            0.0,
+            self.config.cohort_max_weight,
+        ))
+        support_span = max(1, self.config.cohort_full_support_wells - self.config.cohort_min_wells)
+        support_factor = float(np.clip(
+            (support_n - self.config.cohort_min_wells + 1) / support_span,
+            0.0,
+            1.0,
+        ))
+        weight = base_weight * support_factor
+
+        check_n = min(n_future, max(1, int(self.config.cohort_support_horizon)))
+        check_ages = ages[:check_n]
+        counts = np.zeros(check_n, dtype=int)
+        mads = np.full(check_n, np.nan)
+        mask = check_ages < len(entry.age_counts)
+        counts[mask] = entry.age_counts[check_ages[mask]]
+        mads[mask] = entry.age_log_mad[check_ages[mask]]
+        min_age_support = int(np.min(counts)) if counts.size else 0
+        finite_mad = mads[np.isfinite(mads)]
+        log_mad = float(np.median(finite_mad)) if finite_mad.size else None
+        evidence["min_age_support"] = min_age_support
+        evidence["log_mad"] = log_mad
+
+        if self.config.cohort_min_forecast_age_support > 0:
+            if min_age_support < self.config.cohort_min_forecast_age_support:
+                evidence["gate_reason"] = "insufficient_age_specific_support"
+                return fc, 0.0, evidence
+            age_support_factor = float(np.clip(
+                min_age_support / max(self.config.cohort_full_support_wells, 1),
+                0.0,
+                1.0,
+            ))
+            weight *= age_support_factor
+
+        if self.config.cohort_max_log_mad is not None:
+            if log_mad is None or log_mad > self.config.cohort_max_log_mad:
+                evidence["gate_reason"] = "cohort_dispersion_too_high"
+                return fc, 0.0, evidence
+            # Smoothly reduce authority as peer dispersion approaches the cap.
+            weight *= max(0.25, 1.0 - 0.5 * log_mad / max(self.config.cohort_max_log_mad, 1e-9))
+
+        if valid.size >= 4:
+            tail = q[valid[-min(6, valid.size) :]]
+            prior_tail = q[valid[-min(4, valid.size) : -1]]
+            if prior_tail.size:
+                endpoint_ratio = float(tail[-1] / max(float(np.median(prior_tail)), MIN_POSITIVE))
+                lo = self.config.cohort_endpoint_ratio_low
+                hi = self.config.cohort_endpoint_ratio_high
+                if (lo is not None and endpoint_ratio < lo) or (hi is not None and endpoint_ratio > hi):
+                    evidence["gate_reason"] = "endpoint_level_anomaly"
+                    return fc, 0.0, evidence
+            if self.config.cohort_endpoint_log_volatility_max is not None and tail.size >= 4:
+                volatility = float(np.std(np.diff(np.log(np.maximum(tail, MIN_POSITIVE)))))
+                if volatility > self.config.cohort_endpoint_log_volatility_max:
+                    evidence["gate_reason"] = "endpoint_volatility_anomaly"
+                    return fc, 0.0, evidence
+
+        sim_idx = valid[valid >= peak][-max(3, int(self.config.cohort_similarity_window)) :]
+        sim_idx = sim_idx[(sim_idx - peak) < len(profile)]
+        similarity_error = None
+        if sim_idx.size >= 3:
+            obs = np.log(np.maximum(q[sim_idx] / peak_q, MIN_POSITIVE))
+            ref = np.log(np.maximum(profile[sim_idx - peak], MIN_POSITIVE))
+            similarity_error = float(np.median(np.abs(obs - ref)))
+        evidence["similarity_error"] = similarity_error
+        if self.config.cohort_max_history_log_error is not None:
+            if similarity_error is None or similarity_error > self.config.cohort_max_history_log_error:
+                evidence["gate_reason"] = "target_not_cohort_like"
+                return fc, 0.0, evidence
+            weight *= max(0.25, 1.0 - 0.5 * similarity_error / max(self.config.cohort_max_history_log_error, 1e-9))
+
+        evidence["gate_reason"] = "cohort_gate_pass" if weight > 0 else "zero_thin_history_weight"
+        return fc, float(np.clip(weight, 0.0, self.config.cohort_max_weight)), evidence
 
     def ratio_prior(self, well_id: str, relation: str, metadata: dict[str, dict[str, str]]) -> float:
         group = self._group(well_id, metadata)
         value = self.ratio_slopes.get((group, relation))
-        if value is None or value[1] < self.config.cohort_min_wells:
+        if (value is None or value[1] < self.config.cohort_min_wells) and self.config.allow_global_cohort_fallback:
             value = self.ratio_slopes.get(("__global__", relation))
         return float(value[0]) if value is not None else 0.0
-
 
 def _primary_phase(well: WellSeries) -> str:
     oil = float(np.nansum(np.maximum(well.oil, 0.0)))
@@ -673,6 +1132,37 @@ def _ratio_forecast(
     return np.maximum(den_forecast * future_ratio, 0.0), flags
 
 
+def _cohort_route_allowed(
+    well: WellSeries,
+    phase: str,
+    metadata: dict[str, dict[str, str]],
+    config: SmartCastConfig,
+) -> tuple[bool, str]:
+    """Return whether the cohort layer may alter this target/phase.
+
+    The selective route is intentionally simple and auditable.  It never uses
+    provenance, producing-days, holdout information, or learned labels.
+    """
+    primary = _primary_phase(well)
+    if config.cohort_allowed_primary_phases is not None:
+        allowed = {str(v).strip().lower() for v in config.cohort_allowed_primary_phases}
+        if primary.lower() not in allowed:
+            return False, "selective_route_primary_phase"
+
+    group = CohortLibrary._group(well.well_id, metadata)
+    if config.cohort_allowed_groups is not None:
+        allowed_groups = {str(v).strip().lower() for v in config.cohort_allowed_groups}
+        if group.lower() not in allowed_groups:
+            return False, "selective_route_play"
+
+    if config.cohort_allowed_forecast_phases is not None:
+        allowed_phases = {str(v).strip().lower() for v in config.cohort_allowed_forecast_phases}
+        if phase.lower() not in allowed_phases:
+            return False, "selective_route_forecast_phase"
+
+    return True, "cohort_route_allowed"
+
+
 class SmartCastProvider:
     """ForecastProvider-compatible, cross-well SmartCast implementation."""
 
@@ -685,7 +1175,8 @@ class SmartCastProvider:
         self.wells = {w.well_id: w for w in wells}
         self.metadata = metadata or {}
         self.config = config or SmartCastConfig()
-        self.cohorts = CohortLibrary(wells, self.metadata, self.config)
+        cohort_wells = wells if (self.config.use_cohort or self.config.use_ratio_coupling) else []
+        self.cohorts = CohortLibrary(cohort_wells, self.metadata, self.config)
         self._cache: dict[tuple[str, int], dict[str, np.ndarray]] = {}
         self.diagnostics: dict[tuple[str, int], WellDiagnostic] = {}
 
@@ -696,25 +1187,127 @@ class SmartCastProvider:
         return self._cache[key].get(phase)
 
     def _forecast_well(self, well: WellSeries, horizon: int) -> dict[str, np.ndarray]:
+        if (self.config.require_target_group_metadata
+                and (self.config.use_cohort or self.config.use_ratio_coupling)
+                and not self.metadata.get(well.well_id, {}).get("basin", "").strip()):
+            raise ValueError(
+                f"missing play/basin metadata for target well {well.well_id!r}; "
+                "refusing silent __global__ cohort fallback"
+            )
         independent: dict[str, np.ndarray] = {}
         phase_diags: dict[str, PhaseDiagnostic] = {}
         for phase in PHASES:
             q = np.asarray(getattr(well, phase), dtype=float)
             if not np.any(np.isfinite(q)):
                 continue
-            fc, diag = smartcast_phase(q, horizon, self.config)
-            cohort_fc, weight = self.cohorts.forecast(well, phase, horizon, self.metadata)
+            cohort_allowed, cohort_route_reason = _cohort_route_allowed(
+                well, phase, self.metadata, self.config
+            )
+            if _uses_anchor_base_without_candidates(self.config):
+                fc, diag = _anchor_only_phase(q, horizon, self.config)
+                if self.config.use_cohort and cohort_allowed:
+                    cohort_fc, weight, cohort_evidence = self.cohorts.forecast(
+                        well, phase, horizon, self.metadata
+                    )
+                    diag.routing_reason = "anchor_plus_cohort_fast_path"
+                else:
+                    cohort_fc, weight, cohort_evidence = None, 0.0, {
+                        "support_n": 0,
+                        "min_age_support": 0,
+                        "log_mad": None,
+                        "similarity_error": None,
+                        "gate_reason": (cohort_route_reason if self.config.use_cohort else "anchor_only"),
+                    }
+            else:
+                fc, diag = smartcast_phase(q, horizon, self.config)
+                if self.config.use_cohort and cohort_allowed:
+                    cohort_fc, weight, cohort_evidence = self.cohorts.forecast(
+                        well, phase, horizon, self.metadata
+                    )
+                else:
+                    cohort_fc, weight, cohort_evidence = None, 0.0, {
+                        "support_n": 0,
+                        "min_age_support": 0,
+                        "log_mad": None,
+                        "similarity_error": None,
+                        "gate_reason": (cohort_route_reason if self.config.use_cohort else "cohort_disabled"),
+                    }
             # A cohort prior must not overwrite a clear cutoff disruption.
             # Preserve the per-well capacity/status hypotheses until the newest
             # report is understood.
             if "terminal_low" in diag.flags or any(f.startswith("terminal_zero_streak_") for f in diag.flags):
                 weight = 0.0
+                cohort_evidence["gate_reason"] = "terminal_disruption"
                 diag.flags.append("cohort_suppressed_terminal_disruption")
-            if cohort_fc is not None and weight > 0:
-                fc = (1.0 - weight) * fc + weight * cohort_fc
-                diag.cohort_weight = round(weight, 6)
-                diag.flags.append("cohort_shrinkage")
-                diag.model_name += "+cohort"
+
+            cumulative_divergence = None
+            if cohort_fc is not None and weight > 0 and self.config.use_cohort:
+                anchor_safe = np.maximum(np.asarray(fc, dtype=float), MIN_POSITIVE)
+                cohort_safe = np.maximum(np.asarray(cohort_fc, dtype=float), MIN_POSITIVE)
+                check_n = min(
+                    len(anchor_safe),
+                    max(1, int(self.config.cohort_support_horizon)),
+                )
+                if self.config.cohort_max_monthly_log_divergence is not None:
+                    cap = float(self.config.cohort_max_monthly_log_divergence)
+                    log_ratio = np.log(cohort_safe[:check_n] / anchor_safe[:check_n])
+                    if np.any(np.abs(log_ratio) > cap):
+                        cohort_safe = np.clip(
+                            cohort_safe,
+                            anchor_safe * np.exp(-cap),
+                            anchor_safe * np.exp(cap),
+                        )
+                        cohort_fc = cohort_safe
+                        diag.flags.append("cohort_monthly_divergence_capped")
+
+                sa = float(np.sum(anchor_safe[:check_n]))
+                sc = float(np.sum(cohort_safe[:check_n]))
+                if sa > 0 and sc > 0:
+                    cumulative_divergence = float(abs(np.log(sc / sa)))
+                if (
+                    self.config.cohort_max_cumulative_log_divergence is not None
+                    and cumulative_divergence is not None
+                    and cumulative_divergence > self.config.cohort_max_cumulative_log_divergence
+                ):
+                    # Taper the adjustment rather than selecting a new model.
+                    # The exact SciPy control remains the limiting forecast.
+                    weight *= float(
+                        self.config.cohort_max_cumulative_log_divergence
+                        / max(cumulative_divergence, 1e-12)
+                    )
+                    diag.flags.append("cohort_cumulative_divergence_tapered")
+
+                weight = float(np.clip(weight, 0.0, self.config.cohort_max_weight))
+                if weight > 0:
+                    if self.config.cohort_blend_space == "log":
+                        both_zero = (np.asarray(fc) <= 0) & (np.asarray(cohort_fc) <= 0)
+                        fc = np.exp(
+                            (1.0 - weight) * np.log(anchor_safe)
+                            + weight * np.log(np.maximum(cohort_fc, MIN_POSITIVE))
+                        )
+                        fc[both_zero] = 0.0
+                    elif self.config.cohort_blend_space == "linear":
+                        fc = (1.0 - weight) * fc + weight * cohort_fc
+                    else:
+                        raise ValueError(
+                            f"unknown cohort_blend_space: {self.config.cohort_blend_space!r}"
+                        )
+                    diag.cohort_weight = round(weight, 6)
+                    diag.flags.append("cohort_shrinkage")
+                    diag.model_name += "+cohort"
+
+            diag.cohort_support = int(cohort_evidence.get("min_age_support") or 0)
+            log_mad = cohort_evidence.get("log_mad")
+            diag.cohort_log_mad = round(float(log_mad), 6) if log_mad is not None else None
+            sim = cohort_evidence.get("similarity_error")
+            diag.cohort_similarity_error = round(float(sim), 6) if sim is not None else None
+            diag.cohort_cumulative_divergence = (
+                round(float(cumulative_divergence), 6)
+                if cumulative_divergence is not None else None
+            )
+            diag.cohort_gate_reason = str(cohort_evidence.get("gate_reason") or "")
+            if diag.cohort_gate_reason and diag.cohort_gate_reason != "cohort_gate_pass":
+                diag.flags.append(f"cohort_gate:{diag.cohort_gate_reason}")
             diag.well_id = well.well_id
             diag.phase = phase
             independent[phase] = np.maximum(fc, 0.0)
@@ -722,7 +1315,7 @@ class SmartCastProvider:
 
         primary = _primary_phase(well)
         primary_fc = independent.get(primary)
-        if primary_fc is not None:
+        if primary_fc is not None and self.config.use_ratio_coupling:
             if primary == "oil":
                 rels = (("gas", "gor", well.gas, well.oil), ("water", "wor", well.water, well.oil))
             else:
@@ -782,8 +1375,10 @@ class SmartCastProvider:
             rows.sort(key=lambda r: (-int(r["review_score"]), str(r["well_id"]), str(r["phase"])))
             fields = [
                 "well_id", "phase", "primary_phase", "review_score", "model_name",
-                "history_months", "positive_months", "backtest_score", "cohort_weight",
-                "uptime", "flags",
+                "history_months", "positive_months", "backtest_score", "anchor_backtest_score",
+                "smart_weight", "routing_reason", "cohort_weight", "cohort_support",
+                "cohort_log_mad", "cohort_similarity_error",
+                "cohort_cumulative_divergence", "cohort_gate_reason", "uptime", "flags",
             ]
             with review_csv.open("w", newline="") as f:
                 writer = csv.DictWriter(f, fieldnames=fields)

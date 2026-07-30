@@ -16,16 +16,17 @@ from time import perf_counter
 import numpy as np
 
 from forecast_benchmark.data import PHASES
+from forecast_benchmark.profiles import get_profile, profile_names
 from forecast_benchmark.smartcast import SmartCastProvider
 from forecast_benchmark.split import Split
 from forecast_benchmark.stressboard import make_stress_cases
 
 
-def run(n_wells: int, horizon: int, seed: int) -> dict:
+def run(n_wells: int, horizon: int, seed: int, profile: str = "scipy_control") -> dict:
     cases = make_stress_cases(seed, n_wells=n_wells, horizon=max(12, min(horizon, 24)))
     wells = [c.train for c in cases]
     metadata = {c.train.well_id: c.metadata for c in cases}
-    provider = SmartCastProvider(wells, metadata)
+    provider = SmartCastProvider(wells, metadata, get_profile(profile))
     started = perf_counter()
     values = 0
     failures = []
@@ -43,6 +44,7 @@ def run(n_wells: int, horizon: int, seed: int) -> dict:
                 values += len(fc)
     elapsed = perf_counter() - started
     return {
+        "profile": profile,
         "n_wells": n_wells,
         "horizon": horizon,
         "phases": len(PHASES),
@@ -60,9 +62,10 @@ def main() -> None:
     p.add_argument("--wells", type=int, default=1000)
     p.add_argument("--horizon", type=int, default=360)
     p.add_argument("--seed", type=int, default=2026)
+    p.add_argument("--profile", choices=profile_names(production_only=True), default="scipy_control")
     p.add_argument("--out", type=Path, default=Path("results/throughput_test.json"))
     args = p.parse_args()
-    result = run(args.wells, args.horizon, args.seed)
+    result = run(args.wells, args.horizon, args.seed, args.profile)
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
     print(json.dumps(result, indent=2, sort_keys=True))

@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Generate the no-touch Strict Auto SPEE submission.
 
-Default model: SmartCast v1, fully deterministic after the command starts.
-Legacy Arps arms remain available for regression and ablation runs.
+The safe default is the verified ``anchor_only`` v1.3 profile: frozen original
+SciPy bounded-Arps plus the common terminal-decline rule. Experimental SmartCast
+profiles must be selected explicitly after they pass the real-board gate.
 """
 from __future__ import annotations
 
@@ -13,10 +14,12 @@ if str(_BOOTSTRAP_SRC) not in _bootstrap_sys.path:
     _bootstrap_sys.path.insert(0, str(_BOOTSTRAP_SRC))
 
 import argparse
+from dataclasses import asdict
 import sys
 from pathlib import Path
 
 from forecast_benchmark.arps import arps_hyperbolic_bounded_b, arps_inner_backtest_routed, arps_lag_skip_2_b_cap_1p0
+from forecast_benchmark.profiles import get_profile, profile_names
 from forecast_benchmark.providers import from_model_fn
 from forecast_benchmark.smartcast import SmartCastProvider
 from forecast_benchmark.spee import Timer, generate_submission, load_submission_wells, write_failure_markdown, write_failures_csv, write_run_log, write_submission_csv
@@ -31,7 +34,18 @@ LEGACY_MODELS = {
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("input_dir", nargs="?", default="spee_data", type=Path)
-    p.add_argument("--model", choices=("smartcast_v1", *sorted(LEGACY_MODELS)), default="smartcast_v1")
+    p.add_argument(
+        "--model",
+        choices=("smartcast_v15", "smartcast_v13", "smartcast_v1", *sorted(LEGACY_MODELS)),
+        default="smartcast_v15",
+        help="smartcast_v13 and smartcast_v1 are compatibility aliases for smartcast_v15",
+    )
+    p.add_argument(
+        "--profile",
+        choices=profile_names(production_only=True),
+        default="scipy_control",
+        help="pre-registered profile; do not change after Strict Auto starts",
+    )
     p.add_argument("--horizon", type=int, default=360)
     p.add_argument("--forecast-start")
     p.add_argument("--gap-policy", choices=("nan", "zero", "error"), default=None)
@@ -48,14 +62,18 @@ def main() -> None:
     timer = Timer.start()
     try:
         wells, metadata = load_submission_wells(args.input_dir, gap_policy=args.gap_policy)
-        if args.model == "smartcast_v1":
-            smart = SmartCastProvider(wells, metadata)
+        if args.model in {"smartcast_v15", "smartcast_v13", "smartcast_v1"}:
+            config = get_profile(args.profile)
+            smart = SmartCastProvider(wells, metadata, config)
             provider = smart
+            model_name = f"smartcast_v1.5:{args.profile}"
         else:
             smart = None
+            config = None
             provider = from_model_fn(LEGACY_MODELS[args.model])
+            model_name = args.model
         result = generate_submission(
-            wells, provider, submission_type="strict_auto", model_name=args.model,
+            wells, provider, submission_type="strict_auto", model_name=model_name,
             horizon=args.horizon, metadata=metadata, forecast_start=args.forecast_start,
         )
         write_submission_csv(result, args.out)
@@ -65,11 +83,13 @@ def main() -> None:
             smart.write_diagnostics(args.diagnostics, args.review_queue)
         write_run_log(
             result, args.run_log, elapsed_seconds=timer.elapsed_seconds(),
-            command="run_spee_strict_auto", model_name=args.model,
+            command="run_spee_strict_auto", model_name=model_name,
             input_dir=args.input_dir, output_csv=args.out,
             extra={
                 "submission_type": "strict_auto",
-                "algorithm_version": "smartcast_v1" if smart is not None else "legacy",
+                "algorithm_version": "smartcast_v1.5" if smart is not None else "legacy",
+                "profile": args.profile if smart is not None else None,
+                "profile_config": asdict(config) if config is not None else None,
                 "diagnostics": str(args.diagnostics) if smart is not None else None,
                 "review_queue": str(args.review_queue) if smart is not None else None,
                 "human_intervention_after_start": False,

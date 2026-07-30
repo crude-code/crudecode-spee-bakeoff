@@ -1,0 +1,13 @@
+well_id,pad_id,operator,basin,lateral_length_ft
+42000000000000,pad-0,Synthetic Operator,basin-0,5000
+42000000000001,pad-0,Synthetic Operator,basin-1,5500
+42000000000002,pad-0,Synthetic Operator,basin-2,6000
+42000000000003,pad-0,Synthetic Operator,basin-0,6500
+42000000000004,pad-1,Synthetic Operator,basin-1,5000
+42000000000005,pad-1,Synthetic Operator,basin-2,5500
+42000000000006,pad-1,Synthetic Operator,basin-0,6000
+42000000000007,pad-1,Synthetic Operator,basin-1,6500
+42000000000008,pad-2,Synthetic Operator,basin-2,5000
+42000000000009,pad-2,Synthetic Operator,basin-0,5500
+42000000000010,pad-2,Synthetic Operator,basin-1,6000
+42000000000011,pad-2,Synthetic Operator,basin-2,6500

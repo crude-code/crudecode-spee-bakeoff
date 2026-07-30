@@ -1,0 +1,35 @@
+{
+  "release": "1.4.0",
+  "validation_date": "2026-07-30",
+  "tests": {
+    "passed": 94,
+    "failed": 0
+  },
+  "compileall": "passed",
+  "public_boundary_current_tree": "passed",
+  "scipy_control_parity": {
+    "randomized_histories": 120,
+    "passed": 120,
+    "rtol": 1e-10,
+    "atol": 1e-10
+  },
+  "gated_cohort_unit_controls": {
+    "authority_cap": "passed",
+    "age_specific_support": "passed",
+    "endpoint_anomaly_suppression": "passed"
+  },
+  "runner_smokes": {
+    "tail_diagnostics": "passed",
+    "fixed_confirm3_no_false_promotion": "passed"
+  },
+  "throughput_smoke": {
+    "profile": "gated_cohort_v1",
+    "wells": 100,
+    "phases": 3,
+    "horizon_months": 360,
+    "forecast_values": 108000,
+    "elapsed_seconds": 19.621,
+    "failure_count": 0
+  },
+  "claim_boundary": "No real-board accuracy improvement is claimed until the private spent-pool diagnostic and untouched confirm3 run are executed."
+}

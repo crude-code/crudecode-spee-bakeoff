@@ -41,3 +41,66 @@ def test_run_llm_imports_without_optional_anthropic_dependency():
         cwd=repo, text=True, capture_output=True,
     )
     assert result.returncode == 0, result.stderr
+
+
+def test_adding_confirmation_role_preserves_existing_role_prefix():
+    from copy import deepcopy
+    from scripts.extract_real_board import assign_roles
+
+    base = []
+    for play in ("A", "B"):
+        for bucket in ("b1", "b2"):
+            for i in range(20):
+                base.append({
+                    "play": play,
+                    "bucket": bucket,
+                    "ord_hash": f"{play}-{bucket}-{i:03d}",
+                })
+
+    old = deepcopy(base)
+    assign_roles(old, n_eval=12, n_cohort=8, n_dev=8, n_confirm=0)
+    old_roles = {
+        w["ord_hash"]: w["role"]
+        for w in old if w["role"] in {"eval", "cohort", "dev"}
+    }
+
+    extended = deepcopy(base)
+    assign_roles(extended, n_eval=12, n_cohort=8, n_dev=8, n_confirm=10)
+    new_roles = {w["ord_hash"]: w["role"] for w in extended}
+    assert all(new_roles[key] == role for key, role in old_roles.items())
+    assert sum(w["role"] == "confirm" for w in extended) == 10
+
+
+def test_adding_second_confirmation_preserves_first_confirmation_pool():
+    from copy import deepcopy
+    from scripts.extract_real_board import assign_roles
+
+    base = []
+    for play in ("A", "B"):
+        for bucket in ("b1", "b2"):
+            for i in range(40):
+                base.append({
+                    "play": play,
+                    "bucket": bucket,
+                    "ord_hash": f"{play}-{bucket}-{i:03d}",
+                })
+
+    first = deepcopy(base)
+    assign_roles(first, n_eval=12, n_cohort=8, n_dev=8, n_confirm=10)
+    frozen = {
+        w["ord_hash"]: w["role"]
+        for w in first if w["role"] in {"eval", "cohort", "dev", "confirm"}
+    }
+
+    extended = deepcopy(base)
+    assign_roles(
+        extended,
+        n_eval=12,
+        n_cohort=8,
+        n_dev=8,
+        n_confirm=10,
+        n_confirm2=16,
+    )
+    current = {w["ord_hash"]: w["role"] for w in extended}
+    assert all(current[key] == role for key, role in frozen.items())
+    assert sum(w["role"] == "confirm2" for w in extended) == 16

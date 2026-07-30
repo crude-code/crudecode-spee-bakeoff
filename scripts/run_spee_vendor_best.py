@@ -15,11 +15,13 @@ if str(_BOOTSTRAP_SRC) not in _bootstrap_sys.path:
     _bootstrap_sys.path.insert(0, str(_BOOTSTRAP_SRC))
 
 import argparse
+from dataclasses import asdict
 import sys
 from pathlib import Path
 
-from forecast_benchmark.arps import arps_hyperbolic_bounded_b
+from forecast_benchmark.arps_scipy_v1 import arps_bounded_scipy_v1
 from forecast_benchmark.overrides import load_overrides, with_overrides
+from forecast_benchmark.profiles import get_profile, profile_names
 from forecast_benchmark.providers import from_model_fn, load_precomputed_dir, precomputed
 from forecast_benchmark.smartcast import SmartCastProvider
 from forecast_benchmark.spee import Timer, generate_submission, load_submission_wells, write_failure_markdown, write_failures_csv, write_run_log, write_submission_csv
@@ -29,6 +31,12 @@ def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("input_dir", nargs="?", default="spee_data", type=Path)
     p.add_argument("--llm-dir", type=Path, help="legacy precomputed forecast directory")
+    p.add_argument(
+        "--profile",
+        choices=profile_names(production_only=True),
+        default="scipy_control",
+        help="pre-registered profile; use only a profile that passed the real-board gate",
+    )
     p.add_argument("--fallback-strict-auto", action="store_true")
     p.add_argument("--overrides", type=Path, help="approved override JSON package")
     p.add_argument("--horizon", type=int, default=360)
@@ -48,13 +56,14 @@ def main() -> None:
     try:
         wells, metadata = load_submission_wells(args.input_dir, gap_policy=args.gap_policy)
         smart = None
+        config = None
         audit = None
         if args.llm_dir is not None:
             if not args.llm_dir.is_dir():
                 raise FileNotFoundError(f"forecast dir not found: {args.llm_dir}")
             external = precomputed(load_precomputed_dir(args.llm_dir))
             if args.fallback_strict_auto:
-                strict = from_model_fn(arps_hyperbolic_bounded_b)
+                strict = from_model_fn(arps_bounded_scipy_v1)
                 def base_provider(split, phase):
                     out = external(split, phase)
                     return out if out is not None else strict(split, phase)
@@ -63,9 +72,10 @@ def main() -> None:
                 base_provider = external
                 model_name = "llm_precomputed"
         else:
-            smart = SmartCastProvider(wells, metadata)
+            config = get_profile(args.profile)
+            smart = SmartCastProvider(wells, metadata, config)
             base_provider = smart
-            model_name = "smartcast_v1_vendor_best"
+            model_name = f"smartcast_v1.5:{args.profile}:vendor_best"
 
         provider = base_provider
         if args.overrides is not None:
@@ -87,6 +97,9 @@ def main() -> None:
             smart.write_diagnostics(args.diagnostics, args.review_queue)
         extra = {
             "submission_type": "vendor_best",
+            "algorithm_version": "smartcast_v1.5" if smart is not None else "legacy",
+            "profile": args.profile if smart is not None else None,
+            "profile_config": asdict(config) if smart is not None else None,
             "llm_dir": str(args.llm_dir) if args.llm_dir else None,
             "fallback_strict_auto": args.fallback_strict_auto,
             "review_queue": str(args.review_queue) if smart is not None else None,

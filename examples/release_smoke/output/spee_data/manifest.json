@@ -1,0 +1,29 @@
+{
+  "canonical_rows": 288,
+  "duplicate_policy": "error",
+  "duplicate_rows_combined": 0,
+  "gap_policy": "nan",
+  "header_aliases": {
+    "basin": "Play",
+    "lateral_length_ft": "Completed Length FT",
+    "operator": "Operator Name",
+    "pad_id": "Pad Name",
+    "well_id": "API14"
+  },
+  "headers_sha256": "3a1437f9c405593e2b65c70efce1e09fa465f9e11a2cc7683317908d91f542f9",
+  "headers_source": "examples/release_smoke/raw/well_headers.csv",
+  "inserted_gap_rows": 1,
+  "monthly_aliases": {
+    "gas": "Gas Volume MCF",
+    "month": "Production Date",
+    "oil": "Oil Volume BBL",
+    "water": "Water Volume BBL",
+    "well_id": "API14"
+  },
+  "monthly_sha256": "e9d074cb38c3f42b6906caa9254f795d267bfb9664a5ebe3921f4cf247ce56ed",
+  "monthly_source": "examples/release_smoke/raw/monthly_production.csv",
+  "n_wells": 12,
+  "schema": "crudecode_spee_input_v1",
+  "source_rows": 287,
+  "wells_with_gaps": 1
+}

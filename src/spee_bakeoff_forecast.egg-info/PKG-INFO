@@ -1,3 +1,21 @@
+Metadata-Version: 2.4
+Name: spee-bakeoff-forecast
+Version: 1.5.0
+Summary: Deterministic empirical DCA with paired multi-seed and real-holdout validation for the SPEE bake-off.
+License: Apache-2.0
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
+License-File: LICENSE
+Requires-Dist: numpy>=1.26
+Requires-Dist: scipy>=1.11
+Provides-Extra: dev
+Requires-Dist: pytest>=8.0; extra == "dev"
+Provides-Extra: llm
+Requires-Dist: anthropic>=0.100; extra == "llm"
+Provides-Extra: snapshot
+Requires-Dist: psycopg2-binary>=2.9; extra == "snapshot"
+Dynamic: license-file
+
 # CrudeCode SPEE Bake-Off SmartCast v1.4.1
 
 Deterministic empirical decline-curve forecasting and validation tooling for the SPEE Software Symposium bake-off.
