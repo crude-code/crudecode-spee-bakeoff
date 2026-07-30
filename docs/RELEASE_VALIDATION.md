@@ -1,3 +1,6 @@
+> **Historical v1.1 validation record.** Current production posture and v1.3
+> gates are documented in `V1_3_ACCURACY_HARDENING.md` and the repository README.
+
 # Release Validation — SmartCast v1.1.0
 
 **Validation date:** July 28, 2026  

@@ -2,6 +2,15 @@
 
 ## SPEE bake-off version
 
+## v1.5 frozen selective-cohort candidate
+
+The only confirmation candidate is `selective_cohort_v1`: exact SciPy for all
+targets except the oil phase of oil-primary DJ, Eagle Ford, and Delaware wells,
+where the unchanged conservative cohort layer is allowed. Missing or ambiguous
+play metadata fails safe to SciPy. Do not alter the route after confirm3 starts.
+Run `scripts/run_v15_selective_confirmation.py`; it is fixed to that profile and
+`role=confirm3`.
+
 This branch is specialized for the forecasting bake-off process. The immediate job is no longer a broad research board; it is: normalize the test package, generate a Strict Auto Forecast, optionally generate a Vendor Best Forecast from precomputed LLM outputs, and keep failures/runtime auditable.
 
 Primary commands:

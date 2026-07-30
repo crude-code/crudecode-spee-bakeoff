@@ -1,6 +1,6 @@
 PYTHON ?= python3
 
-.PHONY: install compile test audit check bench arps-experiments lag-diagnostic spee-validate spee-strict-auto spee-vendor-best stress stress-quick allocation-noise throughput real-holdout
+.PHONY: install compile test audit check bench arps-experiments lag-diagnostic spee-validate spee-strict-auto spee-vendor-best stress stress-quick allocation-noise throughput real-holdout real-select
 
 install:
 	$(PYTHON) -m pip install -e ".[dev]"
@@ -48,3 +48,7 @@ throughput:
 
 real-holdout:
 	@echo "Use scripts/run_real_holdout.py with source attestation; see docs/REAL_DATA_VALIDATION.md"
+
+real-select:
+	@echo "Set LEGACY_FORECAST_SRC to the original forecast-benchmark src directory"
+	PYTHONPATH=src $(PYTHON) scripts/run_v13_selection.py --legacy-src "$(LEGACY_FORECAST_SRC)" --boot 20000 --report-only

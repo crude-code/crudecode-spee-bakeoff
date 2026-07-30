@@ -59,6 +59,10 @@ def test_strict_auto_cli_writes_submission_and_run_log(tmp_path):
         [
             sys.executable, str(repo / "scripts" / "run_spee_strict_auto.py"), str(data_dir),
             "--horizon", "2", "--out", str(out), "--run-log", str(log),
+            "--failures", str(tmp_path / "results" / "strict_failures.csv"),
+            "--failure-report", str(tmp_path / "results" / "strict_failures.md"),
+            "--diagnostics", str(tmp_path / "results" / "strict_diagnostics.json"),
+            "--review-queue", str(tmp_path / "results" / "strict_review.csv"),
         ],
         cwd=repo, text=True, capture_output=True,
     )
@@ -67,6 +71,9 @@ def test_strict_auto_cli_writes_submission_and_run_log(tmp_path):
     payload = json.loads(log.read_text())
     assert payload["submission_type"] == "strict_auto"
     assert payload["forecast_rows"] == 2 * 3 * 2
+    assert payload["profile"] == "scipy_control"
+    assert payload["algorithm_version"] == "smartcast_v1.5"
+    assert payload["model_name"] == "smartcast_v1.5:scipy_control"
     assert validate_submission(out, horizon=2)["n_rows"] == 12
 
 
@@ -107,6 +114,11 @@ def test_vendor_best_cli_uses_precomputed_llm_forecasts(tmp_path):
         [
             sys.executable, str(repo / "scripts" / "run_spee_vendor_best.py"), str(data_dir),
             "--llm-dir", str(llm_dir), "--horizon", "2", "--out", str(out),
+            "--run-log", str(tmp_path / "results" / "vendor_run.json"),
+            "--failures", str(tmp_path / "results" / "vendor_failures.csv"),
+            "--failure-report", str(tmp_path / "results" / "vendor_failures.md"),
+            "--diagnostics", str(tmp_path / "results" / "vendor_diagnostics.json"),
+            "--review-queue", str(tmp_path / "results" / "vendor_review.csv"),
         ],
         cwd=repo, text=True, capture_output=True,
     )

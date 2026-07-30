@@ -1,0 +1,45 @@
+{
+  "built_utc": "2026-07-30T14:00:00Z",
+  "confirmation_candidate": "selective_cohort_v1",
+  "policy": {
+    "fallback": "exact scipy_control",
+    "forecast_phases": [
+      "oil"
+    ],
+    "plays": [
+      "DJ",
+      "EAGLE_FORD",
+      "DELAWARE"
+    ],
+    "primary_phase": [
+      "oil"
+    ],
+    "uses_producingdays": false,
+    "uses_provenance": false
+  },
+  "production_default": "scipy_control",
+  "release": "smartcast-v1.5.0-selective-cohort",
+  "spent_board_evidence": {
+    "n": 749,
+    "relative_improvement_approx": 0.074,
+    "scipy_catastrophic_rate": 0.07076,
+    "scipy_p95_abs_le": 0.8805,
+    "scipy_spee": 0.1719,
+    "selective_catastrophic_rate": 0.06676,
+    "selective_p95_abs_le": 0.8595,
+    "selective_spee": 0.1592,
+    "status": "development selection only; fresh confirmation required"
+  },
+  "verification": {
+    "compileall": "passed",
+    "parity_atol": 1e-10,
+    "parity_rtol": 1e-10,
+    "public_boundary": "passed",
+    "pytest_passed": 106,
+    "pytest_skipped": 2,
+    "scipy_control_parity_histories": 120,
+    "throughput_100_wells_360_months_seconds": 18.373,
+    "throughput_failures": 0,
+    "throughput_forecast_values": 108000
+  }
+}
